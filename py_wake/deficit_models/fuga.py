@@ -36,8 +36,8 @@ class FugaDeficit(DeficitModel):
                 with open(path + 'CaseData.bin', 'rb') as fid2:
                     info = fid2.read(127).decode()
 
-                zeta0 = float(info[info.index('Zeta0'):].replace("Zeta0=", ""))
-                # zeta0 = float(path[path.index('Zeta0'):].replace("Zeta0=", "").replace("/", ""))
+                #zeta0 = float(info[info.index('Zeta0'):].replace("Zeta0=", ""))
+                zeta0 = float(path[path.index('Zeta0'):].replace("Zeta0=", "").replace("/", ""))
 
         def psim(zeta):
             return self.ams * zeta
@@ -170,7 +170,8 @@ class LUTInterpolator(object):
 
 class Fuga(PropagateDownwind):
     def __init__(self, LUT_path, site, windTurbines,
-                 rotorAvgModel=RotorCenter(), deflectionModel=None, turbulenceModel=None):
+                 rotorAvgModel=RotorCenter(), deflectionModel=None, turbulenceModel=None,
+                 superpositionModel=LinearSum()):
         """
         Parameters
         ----------
@@ -191,7 +192,7 @@ class Fuga(PropagateDownwind):
         """
         PropagateDownwind.__init__(self, site, windTurbines,
                                    wake_deficitModel=FugaDeficit(LUT_path),
-                                   rotorAvgModel=rotorAvgModel, superpositionModel=LinearSum(),
+                                   rotorAvgModel=rotorAvgModel, superpositionModel=superpositionModel,
                                    deflectionModel=deflectionModel, turbulenceModel=turbulenceModel)
 
 

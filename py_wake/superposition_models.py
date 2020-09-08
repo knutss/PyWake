@@ -34,6 +34,11 @@ class LinearSum(SuperpositionModel):
         return WS_xxx - np.sum(deficit_jxxx, 0)
 
 
+class LinearAbsSum(SuperpositionModel):
+    def calc_effective_WS(self, WS_xxx, deficit_jxxx):
+        return WS_xxx - np.abs(np.sum(deficit_jxxx, 0))
+
+
 class MaxSum(SuperpositionModel):
     def calc_effective_WS(self, WS_xxx, deficit_jxxx):
         return WS_xxx - np.max(deficit_jxxx, 0)
