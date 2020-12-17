@@ -6,10 +6,12 @@ from py_wake.tests.test_files import tfp
 from py_wake import Fuga
 from py_wake.examples.data import hornsrev1
 import matplotlib.pyplot as plt
-from py_wake.deficit_models.fuga import FugaBlockage, FugaDeficit, LUTInterpolator
+from py_wake.deficit_models.fuga import FugaBlockage, FugaDeficit, LUTInterpolator, FugaUtils
 from py_wake.flow_map import HorizontalGrid
 from py_wake.tests.check_speed import timeit
 from py_wake.utils.grid_interpolator import GridInterpolator
+from py_wake.wind_farm_models.engineering_models import PropagateDownwind
+import pytest
 
 
 def test_fuga():
@@ -56,17 +58,15 @@ def test_fuga():
 
     npt.assert_array_almost_equal(
         Z70[140, 100:400:10],
-        [10.0547, 10.0519, 10.0718, 10.0093, 9.6786, 7.8589, 6.8539, 9.2199,
-         9.9837, 10.036, 10.0796, 10.0469, 10.0439, 9.1866, 7.2552, 9.1518,
-         10.0449, 10.0261, 10.0353, 9.9256, 9.319, 8.0062, 6.789, 8.3578,
-         9.9393, 10.0332, 10.0191, 10.0186, 10.0191, 10.0139], 4)
+        [10.0467, 10.0473, 10.0699, 10.0093, 9.6786, 7.8589, 6.8539, 9.2199, 9.9837, 10.036, 10.0796,
+         10.0469, 10.0439, 9.1866, 7.2552, 9.1518, 10.0449, 10.0261, 10.0353, 9.9256, 9.319, 8.0062,
+         6.789, 8.3578, 9.9393, 10.0332, 10.0183, 10.0186, 10.0191, 10.0139], 4)
 
     npt.assert_array_almost_equal(
         Z73[140, 100:400:10],
-        [10.0542, 10.0514, 10.0706, 10.0075, 9.6778, 7.9006, 6.9218, 9.228,
-         9.9808, 10.0354, 10.0786, 10.0464, 10.0414, 9.1973, 7.3099, 9.1629,
-         10.0432, 10.0257, 10.0344, 9.9236, 9.3274, 8.0502, 6.8512, 8.3813,
-         9.9379, 10.0325, 10.0188, 10.0183, 10.019, 10.0138], 4)
+        [10.0463, 10.0468, 10.0688, 10.0075, 9.6778, 7.9006, 6.9218, 9.228, 9.9808, 10.0354, 10.0786,
+         10.0464, 10.0414, 9.1973, 7.3099, 9.1629, 10.0432, 10.0257, 10.0344, 9.9236, 9.3274, 8.0502,
+         6.8512, 8.3813, 9.9379, 10.0325, 10.018, 10.0183, 10.019, 10.0138], 4)
 
 
 def test_fuga_blockage_wt_row():
@@ -128,22 +128,91 @@ def test_fuga_new_format():
         plt.plot(X[0], Z70[140, :], label="Z=70m")
         plt.plot(X[0], Z73[140, :], label="Z=73m")
         plt.plot(X[0, 100:400:10], Z70[140, 100:400:10], '.')
-        print(list(np.round(Z70[140, 100:400:10], 4)))
-        print(list(np.round(Z73[140, 100:400:10], 4)))
+        print(list(np.round(Z70.values[140, 100:400:10], 4)))
+        print(list(np.round(Z73.values[140, 100:400:10], 4)))
         plt.legend()
         plt.show()
 
     npt.assert_array_almost_equal(
         Z70[140, 100:400:10],
-        [10.051, 10.0337, 10.0649, 10.0374, 9.7865, 7.7119, 6.4956, 9.2753, 10.0047, 10.0689, 10.0444,
-         10.0752, 10.0699, 9.1852, 6.9783, 9.152, 10.0707, 10.0477, 10.0365, 9.9884, 9.2867, 7.5714,
-         6.4451, 8.3276, 9.9976, 10.0251, 10.0261, 10.023, 10.0154, 9.9996], 4)
+        [10.0458, 10.0309, 10.065, 10.0374, 9.7865, 7.7119, 6.4956, 9.2753, 10.0047, 10.0689,
+         10.0444, 10.0752, 10.0699, 9.1852, 6.9783, 9.152, 10.0707, 10.0477, 10.0365, 9.9884,
+         9.2867, 7.5714, 6.4451, 8.3276, 9.9976, 10.0251, 10.0264, 10.023, 10.0154, 9.9996], 4)
 
     npt.assert_array_almost_equal(
         Z73[140, 100:400:10],
-        [10.051, 10.0337, 10.0649, 10.0374, 9.7865, 7.7119, 6.4956, 9.2753, 10.0047, 10.0689, 10.0444,
-         10.0752, 10.0699, 9.1852, 6.9783, 9.152, 10.0707, 10.0477, 10.0365, 9.9884, 9.2867, 7.5714,
-         6.4451, 8.3276, 9.9976, 10.0251, 10.0261, 10.023, 10.0154, 9.9996], 4)
+        [10.0458, 10.0309, 10.065, 10.0374, 9.7865, 7.7119, 6.4956, 9.2753, 10.0047, 10.0689,
+         10.0444, 10.0752, 10.0699, 9.1852, 6.9783, 9.152, 10.0707, 10.0477, 10.0365, 9.9884,
+         9.2867, 7.5714, 6.4451, 8.3276, 9.9976, 10.0251, 10.0264, 10.023, 10.0154, 9.9996], 4)
+
+
+def test_fuga_table_edges():
+
+    wts = HornsrevV80()
+    path = tfp + 'fuga/2MW/Z0=0.03000000Zi=00401Zeta0=0.00E+0/'
+    site = hornsrev1.Hornsrev1Site()
+    fuga = FugaBlockage(path, site, wts)
+
+    D = 80
+    flow_map_dw = fuga([0], [0], wd=270, ws=10).flow_map(HorizontalGrid(np.arange(-200 * D, 450 * D), y=[0]))
+    flow_map_cw = fuga([0], [0], wd=270, ws=10).flow_map(HorizontalGrid([0], np.arange(-20 * D, 20 * D)))
+    flow_map = fuga([0], [0], wd=270, ws=10).flow_map(HorizontalGrid(np.arange(-150, 400) * D, np.arange(-20, 21) * D))
+
+    if 0:
+        plt.plot(flow_map_dw.x / D, flow_map_dw.WS_eff.squeeze())
+        plt.grid()
+        plt.ylim([9.9, 10.1])
+        plt.figure()
+        plt.plot(flow_map_cw.y / D, flow_map_cw.WS_eff.squeeze())
+        plt.grid()
+        plt.ylim([9.9, 10.1])
+        plt.figure()
+        flow_map.WS_eff.plot()
+
+        plt.show()
+
+    npt.assert_array_equal(flow_map.WS_eff.squeeze()[[0, -1], :], 10)
+    npt.assert_array_equal(flow_map.WS_eff.squeeze()[:, [0, -1]], 10)
+
+
+def test_fuga_wriggles():
+    wts = HornsrevV80()
+    path = tfp + 'fuga/2MW/Z0=0.03000000Zi=00401Zeta0=0.00E+0/'
+    site = hornsrev1.Hornsrev1Site()
+    fuga = PropagateDownwind(site, wts, FugaDeficit(path, remove_wriggles=True))
+
+    D = 80
+    flow_map_cw = fuga([0], [0], wd=270, ws=10).flow_map(HorizontalGrid([0], np.arange(-20 * D, 20 * D)))
+
+    y = np.linspace(-5 * D, 5 * D, 100)
+
+    dw_lst = range(10)
+    flow_map_cw_lst = np.array([fuga([0], [0], wd=270, ws=10).flow_map(HorizontalGrid([dw * D], y)).WS_eff.squeeze()
+                                for dw in dw_lst])
+
+    if 0:
+        for flow_map_cw, dw in zip(flow_map_cw_lst, dw_lst):
+            plt.plot(y, flow_map_cw, label="%dD" % dw)
+        plt.xlabel('y [m]')
+        plt.ylabel('ws [m/s')
+        plt.ylim([9.9, 10.1])
+        plt.grid()
+        plt.legend(loc=1)
+        plt.show()
+    assert np.all(flow_map_cw_lst > 0)
+
+
+def test_fuga_utils_mismatch():
+    path = tfp + 'fuga/2MW/Z0=0.03000000Zi=00401Zeta0=0.00E+0/'
+    with pytest.raises(ValueError, match="Mismatch between CaseData.bin and 2MW_FIT_input.par: low_level 102!=155"):
+        FugaUtils(path)
+
+
+def test_mirror():
+    path = tfp + 'fuga/2MW/Z0=0.03000000Zi=00401Zeta0=0.00E+0/'
+    fuga_utils = FugaUtils(path, on_mismatch='input_par')
+    npt.assert_array_almost_equal(fuga_utils.mirror([0, 1, 3]), [3, 1, 0, 1, 3])
+    npt.assert_array_almost_equal(fuga_utils.mirror([0, 1, 3], anti_symmetric=True), [-3, -1, 0, 1, 3])
 
 
 # def cmp_fuga_with_colonel():

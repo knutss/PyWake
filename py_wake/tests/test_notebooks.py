@@ -8,8 +8,10 @@ from py_wake.flow_map import Grid
 
 
 def get_notebooks():
+    def get(path):
+        return [Notebook(path + f) for f in [f for f in os.listdir(path) if f.endswith('.ipynb')]]
     path = os.path.dirname(py_wake.__file__) + "/../docs/notebooks/"
-    return [Notebook(path + f) for f in [f for f in os.listdir(path) if f.endswith('.ipynb')]]
+    return get(path) + get(path + "exercises/")
 
 
 @pytest.mark.parametrize("notebook", get_notebooks())
@@ -23,6 +25,7 @@ def test_notebooks(notebook):
     try:
         default_resolution = Grid.default_resolution
         Grid.default_resolution = 100
+        plt.rcParams.update({'figure.max_open_warning': 0})
         notebook.check_code()
         notebook.check_links()
         notebook.remove_empty_end_cell()
@@ -33,3 +36,8 @@ def test_notebooks(notebook):
     finally:
         Grid.default_resolution = default_resolution
         plt.close()
+        plt.rcParams.update({'figure.max_open_warning': 20})
+
+
+if __name__ == '__main__':
+    print("\n".join([f.filename for f in get_notebooks()]))

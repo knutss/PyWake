@@ -8,8 +8,9 @@ class STF2017TurbulenceModel(TurbulenceModel):
 
     args4addturb = ['dw_ijlk', 'cw_ijlk', 'D_src_il', 'ct_ilk', 'TI_ilk']
 
-    def __init__(self, addedTurbulenceSuperpositionModel=LinearSum()):
-        TurbulenceModel.__init__(self, addedTurbulenceSuperpositionModel)
+    def __init__(self, addedTurbulenceSuperpositionModel=LinearSum(),
+                 **kwargs):
+        TurbulenceModel.__init__(self, addedTurbulenceSuperpositionModel, **kwargs)
 
     def weight(self, dw_ijlk, cw_ijlk, D_src_il):
         # The weight is given by the exponential term in Eq 3.16 and accounts
@@ -26,7 +27,7 @@ class STF2017TurbulenceModel(TurbulenceModel):
             theta = np.arctan2(cw_ijlk, dw_ijlk) * 180.0 / np.pi
 
         # weights_jl = np.where(theta < 3 * theta_w, np.exp(-(theta / theta_w)**2), 0)
-        weights_ijlk = np.where(theta < theta_w, np.exp(-(theta / theta_w)**2), 0)
+        weights_ijlk = np.where(theta < theta_w, np.exp(-(theta / theta_w)**2), 0) * (dw_ijlk > 1e-10)
         return weights_ijlk
 
     def calc_added_turbulence(self, dw_ijlk, cw_ijlk, D_src_il, ct_ilk, TI_ilk, **_):

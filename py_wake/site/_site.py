@@ -1,7 +1,9 @@
-import numpy as np
-from abc import ABC, abstractmethod
-import py_wake.utils.xarray_utils  # register ilk function @UnusedImport
 import matplotlib.pyplot as plt
+import numpy as np
+from py_wake.site.shear import PowerShear
+import py_wake.utils.xarray_utils  # register ilk function @UnusedImport
+import xarray as xr
+from abc import ABC, abstractmethod
 
 """
 suffixs:
@@ -11,9 +13,6 @@ suffixs:
 - k: Wind speeds
 - m: Height above ground
 """
-from py_wake.site.distance import StraightDistance
-from py_wake.site.shear import PowerShear
-import xarray as xr
 
 
 class LocalWind(xr.Dataset):
@@ -33,7 +32,7 @@ class LocalWind(xr.Dataset):
         P : array_like
             Probability/weight
         """
-        coords = {'wd': wd, 'ws': ws, }
+        coords = {'wd': wd, 'ws': np.atleast_1d(ws)}
         assert len(np.atleast_1d(x_i)) == len(np.atleast_1d(y_i))
         n_i = max(len(np.atleast_1d(x_i)), len(np.atleast_1d(h_i)))
         coords['i'] = np.arange(n_i)
@@ -169,20 +168,6 @@ class Site(ABC):
                 local free flow turbulence intensity
             P : DataArray
                 Probability/weight
-        """
-
-    @abstractmethod
-    def probability(self, localWind):
-        """Probability of wind situation (wind speed and direction)
-
-        Parameters
-        ----------
-        localWind : LocalWind
-
-        Returns
-        -------
-        P : DataArray
-            Probability of wind speed and direction at local positions
         """
 
     def distances(self, src_x_i, src_y_i, src_h_i, dst_x_j, dst_y_j, dst_h_j, wd_il):
@@ -372,8 +357,12 @@ class Site(ABC):
         ax.set_theta_offset(np.pi / 2.0)
 
         if ws_bins is None:
-            WS = xr.DataArray([100], [('ws', [100])])
-            lw = self.local_wind(x_i=x, y_i=y, h_i=h, wd=np.arange(360), ws=[100], ws_bins=[0, 200], wd_bin_size=1)
+            if any(['ws' in v.dims for v in self.ds.data_vars.values()]):
+                lw = self.local_wind(x_i=x, y_i=y, h_i=h, wd=np.arange(360), wd_bin_size=1)
+                lw['P'] = lw.P.sum('ws')
+            else:
+                lw = self.local_wind(x_i=x, y_i=y, h_i=h, wd=np.arange(360),
+                                     ws=[100], ws_bins=[0, 200], wd_bin_size=1)
         else:
             if not hasattr(ws_bins, '__len__'):
                 ws_bins = np.linspace(0, 30, ws_bins)
@@ -404,99 +393,9 @@ class Site(ABC):
         return p.T
 
 
-class UniformSite(Site):
-    """Site with uniform (same wind over all, i.e. flat uniform terrain) and
-    constant wind speed probability of 1. Only for one fixed wind speed
-    """
-
-    def __init__(self, p_wd, ti, ws=12, interp_method='nearest', shear=None):
-        super().__init__(StraightDistance())
-        self.default_ws = ws
-        self.ti = get_sector_xr(ti, 'Turbulence intensity')
-        self.p_wd = get_sector_xr(p_wd / np.mean(p_wd) / 360, "Probability of wind direction +/- 0.5deg")
-        self.interp_method = interp_method.replace('piecewise', 'nearest').replace('spline', 'cubic')
-        if self.interp_method not in ['linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic', 'previous', 'next']:
-            raise NotImplementedError('interp_method=%s not implemented' % interp_method)
-        self.shear = shear
-
-    def probability(self, localWind):
-        P = self.p_wd.interp(wd=localWind.WD, method=self.interp_method) * localWind.wd_bin_size
-        P.attrs['Description'] = "Probability of wind flow case (i.e. wind direction +/-%fdeg)" % (
-            localWind.wd_bin_size / 2)
-        return P
-
-    def _local_wind(self, localWind, ws_bins=None):
-        lw = localWind
-        if self.shear:
-            assert 'h' in lw and np.all(lw.h.data != None), "Height must be specified and not None"  # nopep8
-            h = np.unique(lw.h)
-            if len(h) > 1:
-                h = lw.h
-            WS = self.shear(lw.ws, lw.wd, h)
-        else:
-            WS = lw.ws
-
-        TI = self.ti.interp_all(lw)
-        lw.set_W(WS, lw.wd, TI, ws_bins)
-
-        lw['P'] = self.probability(lw)
-        return lw
-
-    def elevation(self, x_i, y_i):
-        return np.zeros_like(x_i)
-
-
-class UniformWeibullSite(UniformSite):
-    """Site with uniform (same wind over all, i.e. flat uniform terrain) and
-    weibull distributed wind speed
-    """
-
-    def __init__(self, p_wd, a, k, ti, interp_method='nearest', shear=None):
-        """Initialize UniformWeibullSite
-
-        Parameters
-        ----------
-        p_wd : array_like
-            Probability of wind direction sectors
-        a : array_like
-            Weilbull scaling parameter of wind direction sectors
-        k : array_like
-            Weibull shape parameter
-        ti : float or array_like
-            Turbulence intensity
-        interp_method : 'nearest', 'linear' or 'spline'
-            p_wd, a, k, ti and alpha are interpolated to 1 deg sectors using this
-            method
-        shear : Shear object
-            Shear object, e.g. NoShear(), PowerShear(h_ref, alpha)
-
-        Notes
-        ------
-        The wind direction sectors will be: [0 +/- w/2, w +/- w/2, ...]
-        where w is 360 / len(p_wd)
-
-        """
-        super().__init__(p_wd, ti, interp_method=interp_method, shear=shear)
-        self.default_ws = np.arange(3, 26)
-        self.a = get_sector_xr(a, 'Weibull A')
-        self.k = get_sector_xr(k, 'Weibull k')
-
-    def weibull_weight(self, localWind, A, k):
-        def cdf(ws, A=A, k=k):
-            return 1 - np.exp(-(1 / A * ws) ** k)
-
-        P = cdf(localWind.ws_upper) - cdf(localWind.ws_lower)
-        P.attrs['Description'] = "Probability of wind flow case (i.e. wind direction and wind speed)"
-        return P
-
-    def probability(self, localWind):
-        lw = localWind
-        p_wd_ilk = UniformSite.probability(self, lw)
-
-        P_ilk = p_wd_ilk * self.weibull_weight(lw,
-                                               self.a.interp(wd=lw.WD, method=self.interp_method),
-                                               self.k.interp(wd=lw.WD, method=self.interp_method))
-        return P_ilk
+from py_wake.site import xrsite  # @NoMove # nopep8
+UniformSite = xrsite.UniformSite
+UniformWeibullSite = xrsite.UniformWeibullSite
 
 
 def get_sector_xr(v, name):

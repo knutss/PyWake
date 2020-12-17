@@ -16,6 +16,15 @@ k = [2.392578, 2.447266, 2.412109, 2.591797, 2.755859, 2.595703,
 ti = .1
 
 
+@pytest.fixture(autouse=True)
+def close_plots():
+    yield
+    try:
+        plt.close()
+    except Exception:
+        pass
+
+
 @pytest.fixture
 def site():
     return UniformWeibullSite(f, A, k, ti, shear=PowerShear(50, alpha=np.zeros_like(f) + .3))
@@ -57,7 +66,7 @@ def test_elevation(site):
 
 
 def test_missing_interp_method():
-    with pytest.raises(NotImplementedError, match="interp_method=missing_method not implemented"):
+    with pytest.raises(AssertionError, match='interp_method "missing_method" not implemented. Must be "linear" or "nearest"'):
         site = UniformWeibullSite([1], [10], [2], .75, interp_method='missing_method')
 
 
@@ -101,7 +110,7 @@ def test_plot_wd_distribution(site):
     plt.figure()
     p2 = site.plot_wd_distribution(n_wd=360)
     npt.assert_array_almost_equal(np.array(p2)[::30] * 30, f, 4)
-    UniformWeibullSite(f, A, k, ti, 'spline').plot_wd_distribution(n_wd=360)
+    # UniformWeibullSite(f, A, k, ti, 'spline').plot_wd_distribution(n_wd=360)
     UniformWeibullSite(f, A, k, ti, 'linear').plot_wd_distribution(n_wd=360)
 
     if 0:
@@ -134,7 +143,7 @@ def test_plot_wd_distribution_with_ws_levels(site):
                                       [0.0103, 0.0386, 0.0369, 0.0127, 0.0015],
                                       [0.0092, 0.0231, 0.0152, 0.0038, 0.0004]], 4)
 
-    if 1:
+    if 0:
         plt.show()
     plt.close()
 

@@ -14,7 +14,8 @@ from py_wake.deficit_models.gaussian import BastankhahGaussian, BastankhahGaussi
 from py_wake.wind_farm_models.engineering_models import PropagateDownwind
 from py_wake.superposition_models import LinearSum
 from py_wake.tests.check_speed import timeit
-from py_wake.site._site import LocalWind, UniformWeibullSite
+from py_wake.site._site import LocalWind
+from py_wake.utils import weibull
 
 
 f = [0.035972, 0.039487, 0.051674, 0.070002, 0.083645, 0.064348,
@@ -24,6 +25,15 @@ A = [9.176929, 9.782334, 9.531809, 9.909545, 10.04269, 9.593921,
 k = [2.392578, 2.447266, 2.412109, 2.591797, 2.755859, 2.595703,
      2.583984, 2.548828, 2.470703, 2.607422, 2.626953, 2.326172]
 ti = .1
+
+
+@pytest.fixture(autouse=True)
+def close_plots():
+    yield
+    try:
+        plt.close()
+    except Exception:
+        pass
 
 
 @pytest.fixture
@@ -65,6 +75,17 @@ def complex_grid_site():
                    'Turning': (['x', 'y'], np.arange(-2, 4, 1).reshape((3, 2))),
                    'Sector_frequency': ('wd', f), 'Weibull_A': ('wd', A), 'Weibull_k': ('wd', k), 'TI': ti},
         coords={'x': [0, 5, 10], 'y': [0, 5], 'wd': np.linspace(0, 360, len(f), endpoint=False)})
+    return XRSite(ds, shear=PowerShear(h_ref=100, alpha=.2), interp_method='linear')
+
+
+@pytest.fixture
+def complex_ws_site():
+    ti = 0.1
+    P = weibull.cdf(np.array([3, 5, 7, 9, 11, 13]), 10, 2) - weibull.cdf(np.array([0, 3, 5, 7, 9, 11]), 10, 2)
+    ds = xr.Dataset(
+        data_vars={'Speedup': (['ws'], np.arange(.8, 1.4, .1)),
+                   'P': (('wd', 'ws'), P[na, :] * np.array(f)[:, na]), 'TI': ti},
+        coords={'ws': [1.5, 4, 6, 8, 10, 12], 'wd': np.linspace(0, 360, len(f), endpoint=False)})
     return XRSite(ds, shear=PowerShear(h_ref=100, alpha=.2), interp_method='linear')
 
 
@@ -169,6 +190,24 @@ def test_complex_grid_local_wind(complex_grid_site):
                                          [0.01079997, 0.01656828, 0.02257487]])
 
 
+def test_wrong_height():
+    ti = 0.1
+    ds = xr.Dataset(
+        data_vars={'Speedup': (['x', 'y', 'h'], np.arange(.8, 1.4, .1).reshape((3, 2, 1))),
+                   'Sector_frequency': ('wd', f), 'Weibull_A': ('wd', A), 'Weibull_k': ('wd', k), 'TI': ti},
+        coords={'x': [0, 5, 10], 'y': [0, 5], 'h': [100], 'wd': np.linspace(0, 360, len(f), endpoint=False)})
+    site = XRSite(ds, shear=PowerShear(h_ref=100, alpha=.2), interp_method='linear')
+
+    y = np.arange(5)
+    x = y * 2
+    X, Y = np.meshgrid(x, y)
+    x_i, y_i = X.flatten(), Y.flatten()
+
+    wdir_lst = np.arange(0, 360, 90)
+    wsp_lst = np.arange(3, 6)
+    lw = site.local_wind(x_i=x_i, y_i=y_i, h_i=100, wd=wdir_lst, ws=wsp_lst)
+
+
 def test_wd_independent_site():
     ti = 0.1
     ds = xr.Dataset(
@@ -194,6 +233,26 @@ def test_elevation():
         coords={'x': [0, 5, 10], 'y': [0, 5]})
     site = XRSite(ds)
     npt.assert_array_almost_equal(site.elevation([2.5, 7.5], [2.5, 2.5]), [0.95, 1.15])
+
+
+def test_plot_wd_distribution(complex_ws_site):
+    res = complex_ws_site.plot_wd_distribution()
+    ref = [0.0312, 0.0332, 0.043, 0.0568, 0.0648, 0.0567, 0.0718, 0.0967, 0.1199, 0.1154, 0.0809, 0.045]
+    if 0:
+        print(np.round(res.squeeze().values, 4).tolist())
+        plt.show()
+    plt.close()
+    npt.assert_array_almost_equal(res.squeeze(), ref, 4)
+
+
+def test_local_wind_P_diff_ws(complex_ws_site):
+    with pytest.raises(ValueError, match='Cannot interpolate ws-dependent P to other range of ws'):
+        complex_ws_site.local_wind([0], [0], 100, wd=np.arange(360), ws=9)
+
+
+def test_local_wind_P_same_ws(complex_ws_site):
+    complex_ws_site.local_wind([0], [0], 100, wd=np.arange(360), ws=10)
+    complex_ws_site.local_wind([0], [0], 100, wd=np.arange(360), ws=[8, 10])
 
 
 def test_cyclic_interpolation(uniform_site):
@@ -283,6 +342,7 @@ def test_neighbour_farm_speed():
 
 
 @pytest.mark.parametrize('h,wd,ws,h_i,wd_l,ws_k', [
+    ([110], range(5, 25), [9, 10, 11], 110, [11.5, 12.5], [9.8, 10.2]),
     ([100, 110, 120], range(360), [9.8], 110, range(360), [9.8]),
     ([100, 110, 120], range(5, 25), [9.8], 110, range(10, 20), [9.8]),
     ([100, 110, 120], range(5, 25), [9, 10, 11], 110, range(10, 20), [10]),
@@ -292,7 +352,7 @@ def test_neighbour_farm_speed():
     ([100, 110, 120], range(5, 25), [9, 10, 11], 110, range(10, 20), [9.8, 10.2]),
     ([100, 110, 120], range(5, 25), [9, 10, 11], 110, [11.5, 12.5], [10]),
     ([100, 110, 120], range(5, 25), [9, 10, 11], 110, [11.5, 12.5], [10]),
-    ([100, 110, 120], range(5, 25), [9, 10, 11], 110, [11.5, 12.5], [9.8, 10.2]),
+    ([100, 110, 120], range(5, 25), [9, 10, 11], 110, [11.5, 12.5], [9.8, 10.2])
 ])
 def test_interp(h, wd, ws, h_i, wd_l, ws_k):
     ds = xr.Dataset({
@@ -323,11 +383,13 @@ def test_interp(h, wd, ws, h_i, wd_l, ws_k):
     )
     site = XRSite(ds)
     lw = LocalWind(x_i=[25, 50], y_i=[225, 250], h_i=h_i, wd=wd_l, ws=ws_k, wd_bin_size=1)
+
     for n in ['XYHLK', 'XYHL', 'XYHK', 'K', 'L', 'KL', 'XY', 'H', 'XYH', 'XYL', 'XYK', 'I', 'IL', 'IK', 'ILK']:
         ip1 = site.interp(site.ds[n], lw.coords)
         ip2 = ds[n].sel_interp_all(lw.coords)
         npt.assert_array_equal(ip1.shape, ip2.shape)
-        npt.assert_array_almost_equal(ip1.data, ip2.data)
+        if not np.isnan(ip2).sum():
+            npt.assert_array_almost_equal(ip1.data, ip2.data)
 
 
 def test_interp_special_cases():

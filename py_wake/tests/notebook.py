@@ -5,9 +5,17 @@ from os.path import join as pjoin
 import re
 import ssl
 import sys
+import matplotlib.pyplot as plt
+from _io import StringIO
 
 
 class Notebook():
+    pip_header = """# Install PyWake if needed
+try:
+    import py_wake
+except ModuleNotFoundError:
+    !pip install git+https://gitlab.windenergy.dtu.dk/TOPFARM/PyWake.git"""
+
     def __init__(self, filename):
         self.filename = filename
         try:
@@ -98,9 +106,10 @@ class Notebook():
         try:
             import contextlib
 
-            with contextlib.redirect_stdout(None):
-                with contextlib.redirect_stderr(None):
+            with contextlib.redirect_stdout(StringIO()):
+                with contextlib.redirect_stderr(StringIO()):
                     exec("def test():\n    " + "\n    ".join(lines) + "\ntest()", {}, {})
+                    plt.close()
         except Exception as e:
             raise type(e)("Code error in %s\n%s\n" % (self.filename, str(e))).with_traceback(sys.exc_info()[2])
 
@@ -110,7 +119,7 @@ class Notebook():
             label, url = link.groups()
             # print(label)
             # print(url)
-            if url.startswith('attachment') or url.startswith("#"):
+            if url.startswith('attachment') or '#' in url:
                 continue
             if url.startswith("../_static"):
                 assert os.path.isfile(os.path.join(os.path.dirname(self.filename), url))
@@ -128,19 +137,15 @@ class Notebook():
         # print(txt)
 
     def check_pip_header(self):
-        pip_header = """# Install PyWake if needed
-try:
-    import py_wake
-except ModuleNotFoundError:
-    !pip install git+https://gitlab.windenergy.dtu.dk/TOPFARM/PyWake.git"""
+
         code = self.get_code()
         if not code:
             return
-        if code[0].strip() != pip_header:
+        if code[0].strip() != self.pip_header:
             for i, cell in enumerate(self.cells):
                 if cell['cell_type'] == "code":
                     break
-            self.insert_code_cell(i, pip_header)
+            self.insert_code_cell(i, self.pip_header)
             self.save()
             raise Exception("""pip install header was not present in %s.
 It has now been auto insert. Please check the notebook and commit the changes""" % os.path.abspath(self.filename))

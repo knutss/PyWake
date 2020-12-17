@@ -11,10 +11,19 @@ class FlowBox(xr.Dataset):
         self.windFarmModel = self.simulationResult.windFarmModel
         lw_j = localWind_j
         wd, ws = lw_j.wd, lw_j.ws
-        coords = {'x': X[0, :, 0], 'y': Y[:, 0, 0], 'h': H[0, 0, :], 'wd': wd, 'ws': ws}
+
+        if X is None and Y is None and H is None:
+            coords = localWind_j.coords
+            X = localWind_j.i
+        else:
+            coords = {'x': X[0, :, 0], 'y': Y[:, 0, 0], 'h': H[0, 0, :], 'wd': wd, 'ws': ws}
 
         def get_da(arr_jlk):
-            return xr.DataArray(arr_jlk.reshape(X.shape + (len(wd), len(ws))), coords, dims=['y', 'x', 'h', 'wd', 'ws'])
+            if len(X.shape) == 1:
+                return xr.DataArray(arr_jlk.reshape(X.shape + (len(wd), len(ws))), coords, dims=['i', 'wd', 'ws'])
+            else:
+                return xr.DataArray(arr_jlk.reshape(X.shape + (len(wd), len(ws))),
+                                    coords, dims=['y', 'x', 'h', 'wd', 'ws'])
         JLK = WS_eff_jlk.shape
         xr.Dataset.__init__(self, data_vars={k: get_da(v) for k, v in [
             ('WS_eff', WS_eff_jlk), ('TI_eff', TI_eff_jlk),
@@ -27,14 +36,20 @@ class FlowMap(FlowBox):
     def __init__(self, simulationResult, X, Y, localWind_j, WS_eff_jlk, TI_eff_jlk, plane):
         self.X = X
         self.Y = Y
+        self.plane = plane
+
         if plane[0] == 'XY':
             X = X[:, :, na]
             Y = Y[:, :, na]
             H = np.reshape(localWind_j.h.data, X.shape)
         elif plane[0] == 'YZ':
-            H = Y.T[na, :, :]
+            H = Y.T[:, na, :]
             Y = X.T[:, na, :]
             X = np.reshape(localWind_j.x.data, Y.shape)
+        elif plane[0] == 'xyz':
+            X = None
+            Y = None
+            H = None
         else:
             raise NotImplementedError()
         FlowBox.__init__(self, simulationResult, X, Y, H, localWind_j, WS_eff_jlk, TI_eff_jlk)
@@ -46,9 +61,9 @@ class FlowMap(FlowBox):
         if plane[0] == "YZ":
             # set flowMap.WS_xylk etc.
             for k in ['WS_eff', 'TI_eff', 'WS', 'WD', 'TI', 'P']:
-                setattr(self.__class__, "%s_xylk" % k, property(lambda self, k=k: self[k].isel(x=0)))
-
-        self.plane = plane
+                self[k] = self[k].transpose('h', 'y', ...)
+                setattr(self.__class__, "%s_xylk" % k,
+                        property(lambda self, k=k: self[k].isel(x=0).transpose('y', 'h', ...)))
 
     @property
     def XY(self):
@@ -96,7 +111,8 @@ class FlowMap(FlowBox):
         """
         return self.aep_xylk(wt_type, normalize_probabilities, with_wake_loss).sum(['wd', 'ws'])
 
-    def plot(self, data, clabel, levels=100, cmap=None, plot_colorbar=True, plot_windturbines=True, ax=None):
+    def plot(self, data, clabel, levels=100, cmap=None, plot_colorbar=True, plot_windturbines=True,
+             normalize_with=1, ax=None):
         """Plot data as contouf map
 
         Parameters
@@ -123,42 +139,45 @@ class FlowMap(FlowBox):
             cmap = 'Blues_r'
         if ax is None:
             ax = plt.gca()
+        n = normalize_with
         if self.plane[0] == "YZ":
             y = self.X[0]
             x = np.zeros_like(y) + self.plane[1]
             z = self.simulationResult.windFarmModel.site.elevation(x, y)
-            c = ax.contourf(self.X, self.Y + z, np.reshape(data.isel(x=0), self.X.shape), levels=levels, cmap=cmap)
+            c = ax.contourf(self.X, self.Y + z, data.isel(x=0), levels=levels, cmap=cmap)
             if plot_colorbar:
-                plt.colorbar(c, cmap=cmap, label=clabel)
+                plt.colorbar(c, label=clabel, ax=ax)
             # plot terrain
             y = np.arange(y.min(), y.max())
             x = np.zeros_like(y) + self.plane[1]
             z = self.simulationResult.windFarmModel.site.elevation(x, y)
-            plt.plot(y, z, 'k')
+            ax.plot(y / n, z / n, 'k')
         else:
             # xarray gives strange levels
             # c = data.isel(h=0).plot(levels=levels, cmap=cmap, ax=ax, add_colorbar=plot_colorbar)
-            c = ax.contourf(self.X, self.Y, data.isel(h=0).data, levels=levels, cmap=cmap)
+            c = ax.contourf(self.X / n, self.Y / n, data.isel(h=0).data, levels=levels, cmap=cmap)
             if plot_colorbar:
-                plt.colorbar(c, label=clabel)
+                plt.colorbar(c, label=clabel, ax=ax)
 
         if plot_windturbines:
-            self.plot_windturbines(ax=ax)
+            self.plot_windturbines(normalize_with=normalize_with, ax=ax)
 
         return c
 
-    def plot_windturbines(self, ax=None):
+    def plot_windturbines(self, normalize_with=1, ax=None):
         fm = self.windFarmModel
         yaw = self.simulationResult.Yaw.sel(wd=self.wd[0]).mean(['ws']).data
         if self.plane[0] == "YZ":
-            x_i, y_i = self.simulationResult.x, self.simulationResult.y
+            x_i, y_i = self.simulationResult.x.values, self.simulationResult.y.values
+            h_i = self.simulationResult.h.values
             z_i = self.simulationResult.windFarmModel.site.elevation(x_i, y_i)
-            fm.windTurbines.plot_yz(y_i, z_i, wd=self.wd, yaw=yaw, ax=ax)
+            fm.windTurbines.plot_yz(y_i, z_i, h_i, wd=self.wd, yaw=yaw, normalize_with=normalize_with, ax=ax)
         else:  # self.plane[0] == "XY":
             fm.windTurbines.plot_xy(self.simulationResult.x, self.simulationResult.y, self.simulationResult.type.data,
-                                    wd=self.wd, yaw=yaw, ax=ax)
+                                    wd=self.wd, yaw=yaw, normalize_with=normalize_with, ax=ax)
 
-    def plot_wake_map(self, levels=100, cmap=None, plot_colorbar=True, plot_windturbines=True, ax=None):
+    def plot_wake_map(self, levels=100, cmap=None, plot_colorbar=True, plot_windturbines=True,
+                      normalize_with=1, ax=None):
         """Plot effective wind speed contourf map
 
         Parameters
@@ -178,7 +197,7 @@ class FlowMap(FlowBox):
         """
         return self.plot(self.WS_eff.mean(['wd', 'ws']), clabel='wind speed [m/s]',
                          levels=levels, cmap=cmap, plot_colorbar=plot_colorbar,
-                         plot_windturbines=plot_windturbines, ax=ax)
+                         plot_windturbines=plot_windturbines, normalize_with=normalize_with, ax=ax)
 
     def plot_ti_map(self, levels=100, cmap=None, plot_colorbar=True, plot_windturbines=True, ax=None):
         """Plot effective turbulence intensity contourf map
@@ -311,4 +330,15 @@ class YZGrid(Grid):
 
         Y, Z = np.meshgrid(y, z)
         X = np.zeros_like(Y) + x
-        return Y, Z, X.flatten(), Y.flatten(), Z.flatten()
+        return Y, Z, X.T.flatten(), Y.T.flatten(), Z.T.flatten()
+
+
+class Points(Grid):
+    def __init__(self, x, y, h):
+        assert len(x) == len(y) == len(h)
+        self.x = x
+        self.y = y
+        self.h = h
+
+    def __call__(self, **_):
+        return None, None, self.x, self.y, self.h

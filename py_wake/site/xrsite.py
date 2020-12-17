@@ -1,26 +1,36 @@
-from py_wake.site._site import Site, UniformWeibullSite
 import xarray as xr
 from py_wake.site.distance import StraightDistance
 import numpy as np
 from py_wake.utils.grid_interpolator import GridInterpolator
+from py_wake.site._site import Site
+from py_wake.utils import weibull
 
 
-class XRSite(UniformWeibullSite):
+class XRSite(Site):
     use_WS_bins = False
 
-    def __init__(self, ds, initial_position=None, interp_method='linear', shear=None, distance=StraightDistance()):
+    def __init__(self, ds, initial_position=None, interp_method='linear', shear=None, distance=StraightDistance(),
+                 default_ws=np.arange(3, 26), bounds='check'):
+        assert interp_method in [
+            'linear', 'nearest'], 'interp_method "%s" not implemented. Must be "linear" or "nearest"' % interp_method
+        assert bounds in ['check', 'limit', 'ignore'], 'bounds must be "check", "limit" or "ignore"'
+
         self.interp_method = interp_method
         self.shear = shear
-        self.distance = distance
+        self.bounds = bounds
+
         Site.__init__(self, distance)
+        self.default_ws = default_ws
 
         if 'ws' not in ds.dims:
             ds.update({'ws': self.default_ws})
+        else:
+            self.default_ws = ds.ws
 
         if 'wd' in ds and len(np.atleast_1d(ds.wd)) > 1:
             wd = ds.coords['wd']
             sector_widths = np.diff(wd)
-            assert np.all(sector_widths == sector_widths[0]), \
+            assert np.allclose(sector_widths, sector_widths[0]), \
                 "all sectors must have same width"
             sector_width = sector_widths[0]
         else:
@@ -33,7 +43,7 @@ class XRSite(UniformWeibullSite):
             ds.attrs['initial_position'] = initial_position
 
         # add 360 deg to all wd dependent datavalues
-        if 'wd' in ds and len(np.atleast_1d(ds.wd)) > 1 and ds.wd[-1] != 360 and 360 - ds.wd[-1] == sector_width:
+        if 'wd' in ds and ds.wd[-1] != 360 and 360 - ds.wd[-1] == sector_width:
             ds = xr.concat([ds, ds.sel(wd=0)], 'wd', data_vars='minimal')
             ds.update({'wd': np.r_[ds.wd[:-1], 360]})
 
@@ -42,6 +52,10 @@ class XRSite(UniformWeibullSite):
     @property
     def initial_position(self):
         return self.ds.initial_position
+
+    @initial_position.setter
+    def initial_position(self, initial_position):
+        self.ds.attrs['initial_position'] = initial_position
 
     def save(self, filename):
         self.ds.to_netcdf(filename)
@@ -66,7 +80,7 @@ class XRSite(UniformWeibullSite):
             return self.ds.Elevation.interp(x=xr.DataArray(x_i, dims='z'), y=xr.DataArray(y_i, dims='z'),
                                             method=self.interp_method, kwargs={'bounds_error': True})
         else:
-            return 0
+            return x_i * 0
 
     def interp(self, var, coords):
 
@@ -94,9 +108,9 @@ class XRSite(UniformWeibullSite):
                 # all coordinates in var, no need to interpolate
                 ip_dims.remove(name)
                 indices = np.searchsorted(v, c)
-                if len(indices) == 1:
+                if len(np.unique(indices)) == 1:
                     # only one index, select before interpolation
-                    data = sel(data, data_dims, indices, name)
+                    data = sel(data, data_dims, slice(indices[0], indices[0] + 1), name)
                     indices = [0]
                 else:
                     indices = indices
@@ -117,7 +131,7 @@ class XRSite(UniformWeibullSite):
 
         if len(ip_dims) > 0:
             grid_interp = GridInterpolator([var.coords[k].data for k in ip_dims], data,
-                                           method=self.interp_method)
+                                           method=self.interp_method, bounds=self.bounds)
 
             # get dimension of interpolation coordinates
             I = (1, len(coords.get('x', coords.get('y', coords.get('h', coords.get('i', [None]))))))[
@@ -139,7 +153,7 @@ class XRSite(UniformWeibullSite):
             elif 'ws' in data_dims:
                 shape.append(data.shape[data_dims.index('ws')])
 
-            ip_data = grid_interp(np.array(xp).T).T
+            ip_data = grid_interp(np.array(xp).T)
             ip_data = ip_data.reshape(shape)
         else:
             ip_data = data
@@ -155,8 +169,17 @@ class XRSite(UniformWeibullSite):
             ip_data = sel(ip_data, ip_data_dims, k_indices, 'ws')
 
         ds = coords.to_dataset()
-        ds[var.name] = (ip_data_dims, ip_data)
+        if ip_data_dims:
+            ds[var.name] = (ip_data_dims, ip_data)
+        else:
+            ds[var.name] = ip_data
         return ds[var.name]
+
+    def weibull_weight(self, localWind, A, k):
+
+        P = weibull.cdf(localWind.ws_upper, A=A, k=k) - weibull.cdf(localWind.ws_lower, A=A, k=k)
+        P.attrs['Description'] = "Probability of wind flow case (i.e. wind direction and wind speed)"
+        return P
 
     def _local_wind(self, localWind, ws_bins=None):
         """
@@ -201,12 +224,72 @@ class XRSite(UniformWeibullSite):
         lw.set_data_array(TI_std, 'TI_std', 'Standard deviation of turbulence intensity')
 
         if 'P' in self.ds:
+            if ('ws' in self.ds.P.dims and 'ws' in lw.coords):
+                d_ws = self.ds.P.ws.values
+                c_ws = lw.coords['ws'].values
+                i = np.searchsorted(d_ws, c_ws[0])
+                if (np.any([ws not in d_ws for ws in c_ws]) or  # check all coordinate ws in data ws
+                    len(d_ws[i:i + len(c_ws)]) != len(c_ws) or  # check subset has same length
+                        np.any(d_ws[i:i + len(c_ws)] != c_ws)):  # check subset are equal
+                    raise ValueError("Cannot interpolate ws-dependent P to other range of ws")
             lw['P'] = self.interp(self.ds.P, lw.coords) / \
                 self.ds.sector_width * lw.wd_bin_size
         else:
             sf = self.interp(self.ds.Sector_frequency, lw.coords)
             p_wd = sf / self.ds.sector_width * lw.wd_bin_size
-            lw['P'] = p_wd * self.weibull_weight(lw,
-                                                 self.interp(self.ds.Weibull_A, lw.coords),
-                                                 self.interp(self.ds.Weibull_k, lw.coords))
+            A, k = self.interp(self.ds.Weibull_A, lw.coords), self.interp(self.ds.Weibull_k, lw.coords)
+            lw['Weibull_A'] = A
+            lw['Weibull_k'] = k
+            lw['Sector_frequency'] = p_wd
+            lw['P'] = p_wd * self.weibull_weight(lw, A, k)
         return lw
+
+
+class UniformSite(XRSite):
+    """Site with uniform (same wind over all, i.e. flat uniform terrain) and
+    constant wind speed probability of 1. Only for one fixed wind speed
+    """
+
+    def __init__(self, p_wd, ti, ws=12, interp_method='nearest', shear=None, initial_position=None):
+        ds = xr.Dataset(
+            data_vars={'P': ('wd', p_wd), 'TI': ti},
+            coords={'wd': np.linspace(0, 360, len(p_wd), endpoint=False)})
+
+        XRSite.__init__(self, ds, interp_method=interp_method, shear=shear, initial_position=initial_position,
+                        default_ws=np.atleast_1d(ws))
+
+
+class UniformWeibullSite(XRSite):
+    """Site with uniform (same wind over all, i.e. flat uniform terrain) and
+    weibull distributed wind speed
+    """
+
+    def __init__(self, p_wd, a, k, ti, interp_method='nearest', shear=None):
+        """Initialize UniformWeibullSite
+
+        Parameters
+        ----------
+        p_wd : array_like
+            Probability of wind direction sectors
+        a : array_like
+            Weilbull scaling parameter of wind direction sectors
+        k : array_like
+            Weibull shape parameter
+        ti : float or array_like
+            Turbulence intensity
+        interp_method : 'nearest', 'linear'
+            p_wd, a, k, ti and alpha are interpolated to 1 deg sectors using this
+            method
+        shear : Shear object
+            Shear object, e.g. NoShear(), PowerShear(h_ref, alpha)
+
+        Notes
+        ------
+        The wind direction sectors will be: [0 +/- w/2, w +/- w/2, ...]
+        where w is 360 / len(p_wd)
+
+        """
+        ds = xr.Dataset(
+            data_vars={'Sector_frequency': ('wd', p_wd), 'Weibull_A': ('wd', a), 'Weibull_k': ('wd', k), 'TI': ti},
+            coords={'wd': np.linspace(0, 360, len(p_wd), endpoint=False)})
+        XRSite.__init__(self, ds, interp_method=interp_method, shear=shear)

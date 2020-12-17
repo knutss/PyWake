@@ -7,9 +7,10 @@ from py_wake.wind_farm_models.wind_farm_model import WindFarmModel
 from py_wake.deflection_models.deflection_model import DeflectionModel
 from py_wake.utils.gradients import use_autograd_in, autograd
 from py_wake.rotor_avg_models.rotor_avg_model import RotorCenter, RotorAvgModel
-from py_wake.utils.progressbar import progressbar
 from py_wake.turbulence_models.turbulence_model import TurbulenceModel
 from py_wake.deficit_models.deficit_model import ConvectionDeficitModel
+from py_wake.ground_models.ground_models import NoGround, GroundModel
+from tqdm import tqdm
 
 
 class EngineeringWindFarmModel(WindFarmModel):
@@ -42,7 +43,8 @@ class EngineeringWindFarmModel(WindFarmModel):
     default_grid_resolution = 500
 
     def __init__(self, site, windTurbines, wake_deficitModel, rotorAvgModel, superpositionModel,
-                 blockage_deficitModel=None, deflectionModel=None, turbulenceModel=None):
+                 blockage_deficitModel=None, deflectionModel=None, turbulenceModel=None,
+                 groundModel=None):
 
         WindFarmModel.__init__(self, site, windTurbines)
 
@@ -52,6 +54,9 @@ class EngineeringWindFarmModel(WindFarmModel):
         assert blockage_deficitModel is None or isinstance(blockage_deficitModel, DeficitModel)
         assert deflectionModel is None or isinstance(deflectionModel, DeflectionModel)
         assert turbulenceModel is None or isinstance(turbulenceModel, TurbulenceModel)
+        if groundModel is None:
+            groundModel = NoGround()
+        assert isinstance(groundModel, GroundModel)
         if isinstance(superpositionModel, WeightedSum):
             assert isinstance(wake_deficitModel, ConvectionDeficitModel)
             assert rotorAvgModel.__class__ is RotorCenter, "Multiple rotor average points not implemented for WeightedSum"
@@ -59,13 +64,13 @@ class EngineeringWindFarmModel(WindFarmModel):
         self.site = site
         self.windTurbines = windTurbines
         self.wake_deficitModel = wake_deficitModel
-        rotorAvgModel.set_wake_deficitModel(wake_deficitModel)
         self.rotorAvgModel = rotorAvgModel
 
         self.superpositionModel = superpositionModel
         self.blockage_deficitModel = blockage_deficitModel
         self.deflectionModel = deflectionModel
         self.turbulenceModel = turbulenceModel
+        self.groundModel = groundModel
 
         self.wec = 1  # wake expansion continuation (wake-width scale factor) see
         # Thomas, J. J. and Ning, A., “A Method for Reducing Multi-Modality in the Wind Farm Layout Optimization Problem,”
@@ -73,11 +78,18 @@ class EngineeringWindFarmModel(WindFarmModel):
         # Torque from Wind, Milano, Italy, jun 2018, p. 10.
         self.deficit_initalized = False
 
-        self.args4deficit = self.rotorAvgModel.args4deficit
+        self.args4deficit = self.wake_deficitModel.args4deficit
+        self.args4deficit = set(self.args4deficit) | set(self.rotorAvgModel.args4rotor_avg_deficit)
         if self.blockage_deficitModel:
             self.args4deficit = set(self.args4deficit) | set(self.blockage_deficitModel.args4deficit)
+        if self.groundModel:
+            self.args4deficit = set(self.args4deficit) | set(self.groundModel.args4deficit)
         self.args4all = set(self.args4deficit)
         if self.turbulenceModel:
+            if self.turbulenceModel.rotorAvgModel is None:
+                self.turbulenceModel.rotorAvgModel = rotorAvgModel
+            self.args4addturb = set(self.turbulenceModel.args4addturb) | set(
+                self.turbulenceModel.rotorAvgModel.args4rotor_avg_deficit)
             self.args4all = self.args4all | set(self.turbulenceModel.args4addturb)
         if self.deflectionModel:
             self.args4all = self.args4all | set(self.deflectionModel.args4deflection)
@@ -100,10 +112,11 @@ class EngineeringWindFarmModel(WindFarmModel):
 
     def _init_deficit(self, **kwargs):
         """Calculate layout dependent wake (and blockage) deficit terms"""
-        self.rotorAvgModel._calc_layout_terms(**kwargs)
+        self.rotorAvgModel._calc_layout_terms(self.wake_deficitModel, **kwargs)
         self.wake_deficitModel.deficit_initalized = True
         if self.blockage_deficitModel:
-            self.blockage_deficitModel._calc_layout_terms(**kwargs)
+            if self.blockage_deficitModel != self.wake_deficitModel:
+                self.blockage_deficitModel._calc_layout_terms(**kwargs)
             self.blockage_deficitModel.deficit_initalized = True
 
     def _reset_deficit(self):
@@ -117,7 +130,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         rotor_pos = -1e-10
         if self.blockage_deficitModel is None:
             deficit *= (dw_ijlk > rotor_pos)
-        elif self.blockage_deficitModel != self:
+        elif self.blockage_deficitModel != self.wake_deficitModel:
             # downstream wake deficit + upstream blockage
             deficit = ((dw_ijlk > rotor_pos) * deficit +
                        (dw_ijlk <= rotor_pos) * self.blockage_deficitModel.calc_deficit(dw_ijlk=dw_ijlk, **kwargs))
@@ -125,12 +138,14 @@ class EngineeringWindFarmModel(WindFarmModel):
 
     def _calc_deficit(self, dw_ijlk, **kwargs):
         """Calculate wake (and blockage) deficit"""
-        deficit = self.rotorAvgModel.calc_deficit(dw_ijlk=dw_ijlk, **kwargs)
+        deficit = self.groundModel(lambda **kwargs: self.rotorAvgModel(self.wake_deficitModel.calc_deficit, **kwargs),
+                                   dw_ijlk=dw_ijlk, **kwargs)
         return self._add_blockage(deficit, dw_ijlk, **kwargs)
 
     def _calc_deficit_convection(self, dw_ijlk, **kwargs):
         """Calculate wake convection deficit (and blockage)"""
-        deficit, uc, sigma_sqr = self.rotorAvgModel.calc_deficit_convection(dw_ijlk=dw_ijlk, **kwargs)
+        deficit, uc, sigma_sqr = self.rotorAvgModel.calc_deficit_convection(
+            self.wake_deficitModel, dw_ijlk=dw_ijlk, **kwargs)
         deficit = self._add_blockage(deficit, dw_ijlk)
         return deficit, uc, sigma_sqr
 
@@ -159,8 +174,11 @@ class EngineeringWindFarmModel(WindFarmModel):
             hcw_iil = hcw_iil / self.wec
 
         # add eps to avoid non-differentiable 0
-
-        cw_iil = np.sqrt(hcw_iil**2 + dh_iil**2)
+        if 'autograd' in np.__name__:
+            eps = 2 * np.finfo(np.float).eps ** 2
+        else:
+            eps = 0
+        cw_iil = np.sqrt(hcw_iil**2 + dh_iil**2 + eps)
 
         kwargs = {'localWind': lw,
                   'WS_eff_ilk': WS_eff_ilk, 'TI_eff_ilk': TI_eff_ilk,
@@ -185,7 +203,7 @@ class EngineeringWindFarmModel(WindFarmModel):
         WS_eff_jlk = np.zeros((len(x_j), L, K))
         TI_eff_jlk = np.zeros((len(x_j), L, K))
 
-        for l in progressbar(range(L)):
+        for l in tqdm(range(L), disable=L <= 1 or not self.verbose, desc='Calculate flow map', unit='wd'):
 
             dw_ijl, hcw_ijl, dh_ijl, _ = self.site.distances(wt_x_i, wt_y_i, wt_h_i, x_j, y_j, h_j,
                                                              wd_il=sim_res_data.WD.ilk((I, L, K))[:, l:l + 1, :].mean(2))
@@ -229,12 +247,22 @@ class EngineeringWindFarmModel(WindFarmModel):
                 # one wt at the time to avoid memory problems
                 deficit_ijk = np.zeros((I, J, K))
                 add_turb_ijk = np.zeros((I, J, K))
-                for i in range(I):
+                uc_ijk = np.zeros((I, J, K))
+                sigma_sqr_ijk = np.zeros((I, J, K))
+                for i in tqdm(range(I), disable=I <= 1 or not self.verbose,
+                              desc="Calculate flow map for wd=%d" % l, unit='wt'):
                     args_i = {k: v[i][na] for k, v in args.items()}
-                    deficit_ijk[i] = self._calc_deficit(dw_ijlk=dw_ijlk[i][na], **args_i)[0, :, 0]
+                    if isinstance(self.superpositionModel, WeightedSum):
+                        deficit, uc, sigma_sqr = self._calc_deficit_convection(dw_ijlk=dw_ijlk[i][na], **args_i)
+                        deficit_ijk[i] = deficit[0, :, 0]
+                        uc_ijk[i] = uc[0, :, 0]
+                        sigma_sqr_ijk[i] = sigma_sqr[0, :, 0]
+                    else:
+                        deficit_ijk[i] = self._calc_deficit(dw_ijlk=dw_ijlk[i][na], **args_i)[0, :, 0]
+
                     if self.turbulenceModel:
                         add_turb_ijk[i] = self.turbulenceModel.calc_added_turbulence(
-                            dw_ijlk=dw_ijlk[i], **args_i)[0, :, 0]
+                            dw_ijlk=dw_ijlk[i][na], **args_i)[0, :, 0]
             else:
                 if isinstance(self.superpositionModel, WeightedSum):
                     deficit, uc, sigma_sqr = self._calc_deficit_convection(dw_ijlk=dw_ijlk, **args)
@@ -248,15 +276,15 @@ class EngineeringWindFarmModel(WindFarmModel):
 
             l_ = [l, 0][lw_j.WS_ilk.shape[1] == 1]
             if isinstance(self.superpositionModel, WeightedSum):
-                cw_ijk, hcw_ijk, dh_ijk = np.hypot(dh_ijl[..., na], hcw_ijlk)[
-                    :, :, l], hcw_ijlk[:, :, l], dh_ijl[:, :, l, na]
+                cw_ijk = np.hypot(dh_ijl[..., na], hcw_ijlk)[:, :, 0]
+                hcw_ijk, dh_ijk = hcw_ijlk[:, :, 0], dh_ijl[:, :, 0, na]
                 WS_eff_jlk[:, l] = self.superpositionModel.calc_effective_WS(
-                    lw_j.WS_ilk[:, l], deficit_ijk, uc_ijk, sigma_sqr_ijk, cw_ijk, hcw_ijk, dh_ijk)
+                    lw_j.WS_ilk[:, l_], deficit_ijk, uc_ijk, sigma_sqr_ijk, cw_ijk, hcw_ijk, dh_ijk)
             else:
                 WS_eff_jlk[:, l] = self.superpositionModel.calc_effective_WS(lw_j.WS_ilk[:, l_], deficit_ijk)
 
             if self.turbulenceModel:
-                l_ = [l, 0][lw_j.WS_ilk.shape[1] == 1]
+                l_ = [l, 0][lw_j.TI_ilk.shape[1] == 1]
                 TI_eff_jlk[:, l] = self.turbulenceModel.calc_effective_TI(lw_j.TI_ilk[:, l_], add_turb_ijk)
         return lw_j, WS_eff_jlk, TI_eff_jlk
 
@@ -300,7 +328,8 @@ class PropagateDownwind(EngineeringWindFarmModel):
 
     def __init__(self, site, windTurbines, wake_deficitModel,
                  rotorAvgModel=RotorCenter(), superpositionModel=LinearSum(),
-                 deflectionModel=None, turbulenceModel=None):
+                 deflectionModel=None, turbulenceModel=None,
+                 groundModel=None):
         """Initialize flow model
 
         Parameters
@@ -311,9 +340,10 @@ class PropagateDownwind(EngineeringWindFarmModel):
             WindTurbines object representing the wake generating wind turbines
         wake_deficitModel : DeficitModel
             Model describing the wake(downstream) deficit
-        rotorAvgModel : RotorAvgModel
+        rotorAvgModel : RotorAvgModel, optional
             Model defining one or more points at the down stream rotors to
-            calculate the rotor average wind speeds from
+            calculate the rotor average wind speeds from.
+            Default is RotorCenter, i.e. one point at rotor center
         superpositionModel : SuperpositionModel
             Model defining how deficits sum up
         deflectionModel : DeflectionModel
@@ -322,7 +352,8 @@ class PropagateDownwind(EngineeringWindFarmModel):
             Model describing the amount of added turbulence in the wake
         """
         EngineeringWindFarmModel.__init__(self, site, windTurbines, wake_deficitModel, rotorAvgModel, superpositionModel,
-                                          blockage_deficitModel=None, deflectionModel=deflectionModel, turbulenceModel=turbulenceModel)
+                                          blockage_deficitModel=None, deflectionModel=deflectionModel,
+                                          turbulenceModel=turbulenceModel, groundModel=groundModel)
 
     def _calc_wt_interaction(self, localWind,
                              WS_eff_ilk, TI_eff_ilk,
@@ -361,12 +392,20 @@ class PropagateDownwind(EngineeringWindFarmModel):
         if self.turbulenceModel:
             add_turb_nk = np.zeros((I * I * L, K))
 
-        dw_n, hcw_n, cw_n, dh_n = [a.flatten() for a in [dw_iil, hcw_iil, cw_iil, dh_iil]]
+        def iil2n(iil):
+            if isinstance(iil, np.ndarray):
+                iil.resize(I * I * L)
+                return iil
+            else:
+                # In case of autograd array box
+                return iil.flatten()
+
+        dw_n, hcw_n, dh_n = [iil2n(a) for a in [dw_iil, hcw_iil, dh_iil]]
 
         i_wd_l = np.arange(L)
 
         # Iterate over turbines in down wind order
-        for j in progressbar(range(I)):
+        for j in tqdm(range(I), disable=I <= 1 or not self.verbose, desc="Calculate flow interaction", unit="wt"):
             i_wt_l = dw_order_indices_dl[:, j]
             m = i_wt_l * L + i_wd_l  # current wt (j'th most upstream wts for all wdirs)
 
@@ -450,13 +489,16 @@ class PropagateDownwind(EngineeringWindFarmModel):
 
                 if self.turbulenceModel:
 
-                    if 'wake_radius_ijlk' in self.turbulenceModel.args4addturb:
+                    if 'wake_radius_ijlk' in self.args4addturb:
                         wake_radius_ijlk = self.wake_deficitModel.wake_radius(dw_ijlk=dw_ijlk, **args)
                         arg_funcs['wake_radius_ijlk'] = lambda: wake_radius_ijlk
 
-                    turb_args = {k: arg_funcs[k]() for k in self.turbulenceModel.args4addturb if k != "dw_ijlk"}
+                    turb_args = {k: arg_funcs[k]() for k in self.args4addturb
+                                 if k != "dw_ijlk"}
+
                     # Calculate added turbulence
-                    add_turb_nk[n_dw] = self.turbulenceModel.calc_added_turbulence(dw_ijlk=dw_ijlk, **turb_args)
+                    add_turb_nk[n_dw] = self.turbulenceModel.rotorAvgModel(self.turbulenceModel.calc_added_turbulence,
+                                                                           dw_ijlk=dw_ijlk, **turb_args)
 
         WS_eff_jlk, power_jlk, ct_jlk = np.array(WS_eff_mk), np.array(power_jlk), np.array(ct_jlk)
 
@@ -478,6 +520,7 @@ class All2AllIterative(EngineeringWindFarmModel):
     def __init__(self, site, windTurbines, wake_deficitModel,
                  rotorAvgModel=RotorCenter(), superpositionModel=LinearSum(),
                  blockage_deficitModel=None, deflectionModel=None, turbulenceModel=None,
+                 groundModel=None,
                  convergence_tolerance=1e-6):
         """Initialize flow model
 
@@ -505,7 +548,8 @@ class All2AllIterative(EngineeringWindFarmModel):
             maximum accepted change in WS_eff_ilk [m/s]
         """
         EngineeringWindFarmModel.__init__(self, site, windTurbines, wake_deficitModel, rotorAvgModel, superpositionModel,
-                                          blockage_deficitModel=blockage_deficitModel, deflectionModel=deflectionModel, turbulenceModel=turbulenceModel)
+                                          blockage_deficitModel=blockage_deficitModel, deflectionModel=deflectionModel,
+                                          turbulenceModel=turbulenceModel, groundModel=groundModel)
         self.convergence_tolerance = convergence_tolerance
 
     def _calc_wt_interaction(self, localWind,
@@ -530,7 +574,7 @@ class All2AllIterative(EngineeringWindFarmModel):
                 }
 
         # Iterate until convergence
-        for j in range(I):
+        for j in tqdm(range(I), disable=I <= 1 or not self.verbose, desc="Calculate flow interaction", unit="wt"):
 
             ct_ilk, power_ilk = self.windTurbines._ct_power(WS_eff_ilk, type_i)
             args['ct_ilk'] = ct_ilk
@@ -555,7 +599,7 @@ class All2AllIterative(EngineeringWindFarmModel):
             # Calculate effective wind speed
             WS_eff_ilk = self.superpositionModel.calc_effective_WS(lw.WS_ilk, deficit_iilk)
             if self.turbulenceModel:
-                add_turb_ijlk = self.turbulenceModel.calc_added_turbulence(**args)
+                add_turb_ijlk = self.turbulenceModel.rotorAvgModel(self.turbulenceModel.calc_added_turbulence, **args)
                 TI_eff_ilk = self.turbulenceModel.calc_effective_TI(lw.TI_ilk, add_turb_ijlk)
 
             # Check if converged

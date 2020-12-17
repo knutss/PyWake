@@ -15,17 +15,35 @@ def test_grid_interpolator_not_match():
 
 
 def test_grid_interpolator_wrong_method():
-    with pytest.raises(ValueError, match='Method must be "linear" or "nearest"'):
+    with pytest.raises(AssertionError, match='method must be "linear" or "nearest"'):
         GridInterpolator([[10, 20, 30]], [1, 2, 3], method="cubic")(None)
 
 
-def test_grid_interpolator_outside_area():
-    with pytest.raises(ValueError, match='Outside data area'):
+def test_grid_interpolator_outside_area_bounds_check():
+    with pytest.raises(ValueError, match='Point 0, dimension 0 with value 9.900000 is outside range 10.000000-30.000000'):
         GridInterpolator([[10, 20, 30]], [1, 2, 3])(9.9)
-    with pytest.raises(ValueError, match='Outside data area'):
+
+    with pytest.raises(ValueError, match='Point 0, dimension 0 with value 30.100000 is outside range 10.000000-30.000000'):
         GridInterpolator([[10, 20, 30]], [1, 2, 3])(30.1)
-    with pytest.raises(ValueError, match="Outside data area"):
+
+    with pytest.raises(ValueError, match='Point 1, dimension 0 with value 30.100000 is outside range 10.000000-30.000000'):
+        GridInterpolator([[10, 20, 30]], [1, 2, 3])([[20], [30.1]])
+
+    with pytest.raises(ValueError, match='Point 0, dimension 1 with value 300.100000 is outside range 200.000000-300.000000'):
         GridInterpolator([[5, 10, 15], [200, 300]], np.arange(6).reshape(3, 2))([(5, 300.1)])
+
+    with pytest.raises(ValueError, match='Point 1, dimension 0 with value 4.800000 is outside range 5.000000-15.000000'):
+        GridInterpolator([[5, 10, 15], [200, 300]], np.arange(6).reshape(3, 2))([(5, 199.9), (4.8, 200), (5, 301)])
+
+
+def test_grid_interpolator_outside_area_bounds_limit():
+    gi = GridInterpolator([[10, 20, 30]], [1, 2, 3])
+    npt.assert_array_equal(gi([[10]]), gi([[9.9]], bounds='limit'))
+    npt.assert_array_equal(gi([[30]]), gi([[30.1]], bounds='limit'))
+    npt.assert_array_equal(gi([[20], [30]]), gi([[20], [30.1]], bounds='limit'))
+    gi = GridInterpolator([[5, 10, 15], [200, 300]], np.arange(6).reshape(3, 2))
+    npt.assert_array_equal(gi([(5, 300)]), gi([(5, 300.1)], bounds='limit'))
+    npt.assert_array_equal(gi([(5, 200), (5, 200), (5, 300)]), gi([(5, 199.9), (4.8, 200), (5, 301)], bounds='limit'))
 
 
 def test_grid_interpolator_2d():
@@ -57,7 +75,15 @@ def test_grid_interpolator_2d():
 def test_grid_interpolator_2d_plus_1d():
     eq = GridInterpolator([[5, 10, 15], [200, 300, 400, 500]], np.arange(12).repeat(2).reshape(3, 4, 2))
     x = [[i, 200] for i in np.arange(5, 16)]
-    npt.assert_array_almost_equal(eq(x).sum(0), np.linspace(0, 8, 11) * 2)
+    npt.assert_array_almost_equal(eq(x).sum(1), np.linspace(0, 8, 11) * 2)
+    npt.assert_array_equal(eq(x).shape, (11, 2))
+
+
+def test_grid_interpolator_2d_plus_2d():
+    eq = GridInterpolator([[5, 10, 15], [200, 300, 400, 500]], np.arange(12).repeat(10).reshape(3, 4, 2, 5))
+    x = [[i, 200] for i in np.arange(5, 16)]
+    npt.assert_array_almost_equal(eq(x).sum((1, 2)), np.linspace(0, 8, 11) * 10)
+    npt.assert_array_equal(eq(x).shape, (11, 2, 5))
 
 
 def test_grid_interpolator_non_regular():

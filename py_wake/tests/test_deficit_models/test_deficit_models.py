@@ -25,7 +25,10 @@ from py_wake.superposition_models import SquaredSum, WeightedSum
 from py_wake.tests import npt
 from py_wake.tests.test_files import tfp
 from py_wake.turbulence_models.gcl import GCLTurbulence
-from py_wake.wind_farm_models.engineering_models import PropagateDownwind
+from py_wake.wind_farm_models.engineering_models import PropagateDownwind, All2AllIterative
+from py_wake.turbulence_models.stf import STF2017TurbulenceModel
+from py_wake.examples.data.hornsrev1 import Hornsrev1Site
+from py_wake.deficit_models.selfsimilarity import SelfSimilarityDeficit
 
 
 class GCLLocalDeficit(GCLDeficit):
@@ -66,10 +69,10 @@ def get_all_deficit_models():
                                         7513.75582])),
      (IEA37SimpleBastankhahGaussianDeficit(), read_iea37_windfarm(iea37_path + 'iea37-ex16.yaml')[2]),
      (FugaDeficit(LUT_path=tfp + 'fuga/2MW/Z0=0.00014617Zi=00399Zeta0=0.00E+0/'),
-      (398833.4594353128, [9630.32321, 9731.27952, 12459.23261, 15329.04663, 22194.04385,
-                           27677.4453, 42962.87107, 49467.33757, 24268.41448, 15412.81128,
-                           16675.27526, 35497.95388, 75248.37632, 19673.5648, 13682.27714,
-                           8923.20653])),
+      (398938.8941139709, [9632.92248, 9733.98766, 12462.98413, 15332.30502, 22199.91899,
+                           27683.32851, 42975.80734, 49481.10395, 24274.96466, 15416.63681,
+                           16681.20957, 35508.27583, 75263.59612, 19679.2854, 13687.14632,
+                           8925.42131])),
      (GCLDeficit(), (370863.6246093183,
                      [9385.75387, 8768.52105, 11450.13309, 14262.42186, 21178.74926,
                       25751.59502, 39483.21753, 44573.31533, 23652.09976, 13924.58752,
@@ -206,14 +209,30 @@ def test_wake_radius(deficitModel, wake_radius_ref):
     wfm = PropagateDownwind(site, windTurbines, wake_deficitModel=deficitModel, turbulenceModel=GCLTurbulence())
     wfm(x=[0, 500], y=[0, 0], wd=[30], ws=[10])
 
+    if 0:
+        sim_res = wfm([0], [0], wd=[270], ws=10)
+        sim_res.flow_map(HorizontalGrid(x=np.arange(-100, 1500, 10))).WS_eff.plot()
+        x = np.arange(0, 1500, 10)
+        wr = deficitModel.wake_radius(
+            D_src_il=np.reshape([130], (1, 1)),
+            dw_ijlk=np.reshape(x, (1, len(x), 1, 1)),
+            ct_ilk=sim_res.CT.values,
+            TI_ilk=np.reshape(sim_res.TI.values, (1, 1, 1)),
+            TI_eff_ilk=sim_res.TI_eff.values)[0, :, 0, 0]
+        plt.title(deficitModel.__class__.__name__)
+        plt.plot(x, wr)
+        plt.plot(x, -wr)
+        plt.axis('equal')
+        plt.show()
+
 
 def test_wake_radius_not_implemented():
     site = IEA37Site(16)
     x, y = site.initial_position.T
     windTurbines = IEA37_WindTurbines()
-    wfm = PropagateDownwind(site, windTurbines, wake_deficitModel=NoWakeDeficit(),
+    wfm = PropagateDownwind(site, windTurbines, wake_deficitModel=SelfSimilarityDeficit(),
                             turbulenceModel=GCLTurbulence())
-    with pytest.raises(NotImplementedError, match="wake_radius not implemented for NoWakeDeficit"):
+    with pytest.raises(NotImplementedError, match="wake_radius not implemented for SelfSimilarityDeficit"):
         wfm(x, y)
 
 
@@ -321,10 +340,10 @@ def test_deficitModel_wake_map_convection(deficitModel, ref):
                             7513.75582])),
      (IEA37SimpleBastankhahGaussian, read_iea37_windfarm(iea37_path + 'iea37-ex16.yaml')[2]),
      (lambda *args, **kwargs: Fuga(tfp + 'fuga/2MW/Z0=0.00014617Zi=00399Zeta0=0.00E+0/', *args, **kwargs),
-      (398833.4594353128, [9630.32321, 9731.27952, 12459.23261, 15329.04663, 22194.04385,
-                           27677.4453, 42962.87107, 49467.33757, 24268.41448, 15412.81128,
-                           16675.27526, 35497.95388, 75248.37632, 19673.5648, 13682.27714,
-                           8923.20653])),
+      (398938.8941139709, [9632.92248, 9733.98766, 12462.98413, 15332.30502, 22199.91899,
+                           27683.32851, 42975.80734, 49481.10395, 24274.96466, 15416.63681,
+                           16681.20957, 35508.27583, 75263.59612, 19679.2854, 13687.14632,
+                           8925.42131])),
      (GCL, (370863.6246093183,
             [9385.75387, 8768.52105, 11450.13309, 14262.42186, 21178.74926,
              25751.59502, 39483.21753, 44573.31533, 23652.09976, 13924.58752,
@@ -364,3 +383,13 @@ def test_IEA37_ex16_windFarmModel(windFarmModel, aep_ref):
 
     npt.assert_almost_equal(aep_MW_l.sum(), aep_ref[0], 5)
     npt.assert_array_almost_equal(aep_MW_l, aep_ref[1], 5)
+
+
+@pytest.mark.parametrize('deficitModel', get_all_deficit_models())
+def test_own_deficit_is_zero(deficitModel):
+    site = Hornsrev1Site()
+    windTurbines = IEA37_WindTurbines()
+    wf_model = All2AllIterative(site, windTurbines, wake_deficitModel=deficitModel,
+                                turbulenceModel=STF2017TurbulenceModel())
+    sim_res = wf_model([0], [0])
+    npt.assert_array_equal(sim_res.WS_eff, sim_res.WS.broadcast_like(sim_res.WS_eff))

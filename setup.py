@@ -44,6 +44,8 @@ setup(name='py_wake',
           'tqdm', # progressbar
           'sphinx',  # generating documentation
           'sphinx_rtd_theme',  # docs theme
+          'ipywidgets',  # notebook widgets
+          'line_profiler', # to check speed
           
       ],
       zip_safe=True)

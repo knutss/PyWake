@@ -1,15 +1,16 @@
 from abc import abstractmethod, ABC
-from py_wake.site._site import Site
+from py_wake.site._site import Site, UniformSite, UniformWeibullSite
 from py_wake.wind_turbines import WindTurbines
 import numpy as np
-from py_wake.flow_map import FlowMap, HorizontalGrid, FlowBox, YZGrid, Grid
+from py_wake.flow_map import FlowMap, HorizontalGrid, FlowBox, YZGrid, Grid, Points
 import xarray as xr
-from py_wake.utils import xarray_utils  # register ilk function @UnusedImport
+from py_wake.utils import xarray_utils, weibull  # register ilk function @UnusedImport
 from numpy import newaxis as na
 
 
 class WindFarmModel(ABC):
     """Base class for RANS and engineering flow models"""
+    verbose = True
 
     def __init__(self, site, windTurbines):
         assert isinstance(site, Site)
@@ -17,7 +18,7 @@ class WindFarmModel(ABC):
         self.site = site
         self.windTurbines = windTurbines
 
-    def __call__(self, x, y, h=None, type=0, wd=None, ws=None, yaw_ilk=None):
+    def __call__(self, x, y, h=None, type=0, wd=None, ws=None, yaw_ilk=None, verbose=False):
         """Run the wind farm simulation
 
         Parameters
@@ -34,16 +35,20 @@ class WindFarmModel(ABC):
             Wind direction(s)
         ws : int, float or array_like
             Wind speed(s)
+        yaw_ilk : array_like or None, optional
+            Yaw misalignement of turbine(i) for wind direction(l) and wind speed (k)\n
+            Positive is counter-clockwise when seen from above
 
         Returns
         -------
         SimulationResult
         """
         assert len(x) == len(y)
+        self.verbose = verbose
         type, h, _ = self.windTurbines.get_defaults(len(x), type, h)
 
         if len(x) == 0:
-            lw = self.site.local_wind(x_i=[0], y_i=[0], h_i=[100], wd=wd, ws=ws)
+            lw = UniformSite([1], 0.1).local_wind(x_i=[0], y_i=[0], h_i=[100], wd=wd, ws=ws)
             z = xr.DataArray(np.zeros((1, len(lw.wd), len(lw.ws))), coords=[('wt', [0]), ('wd', lw.wd), ('ws', lw.ws)])
             return SimulationResult(self, lw, [0], yaw_ilk, z, z, z, z)
         res = self.calc_wt_interaction(x_i=x, y_i=y, h_i=h, type_i=type, yaw_ilk=yaw_ilk, wd=wd, ws=ws)
@@ -100,6 +105,9 @@ class WindFarmModel(ABC):
         type_i : array_like or None, optional
             Wind turbine types\n
             If None, default, the first type is used (type=0)
+        yaw_ilk : array_like or None, optional
+            Yaw misalignement [deg] of turbine(i) for wind direction(l) and wind speed (k)\n
+            Positive is counter-clockwise when seen from above
         wd : int, float, array_like or None
             Wind directions(s)\n
             If None, default, the wake is calculated for site.default_wd
@@ -125,12 +133,13 @@ class WindFarmModel(ABC):
 
 class SimulationResult(xr.Dataset):
     """Simulation result returned when calling a WindFarmModel object"""
-    __slots__ = ('windFarmModel', )
+    __slots__ = ('windFarmModel', 'localWind')
 
     def __init__(self, windFarmModel, localWind, type_i, yaw_ilk,
                  WS_eff_ilk, TI_eff_ilk, power_ilk, ct_ilk):
         self.windFarmModel = windFarmModel
         lw = localWind
+        self.localWind = localWind
         n_wt = len(lw.i)
 
         coords = {k: (k, v, {'Description': d}) for k, v, d in [
@@ -151,10 +160,10 @@ class SimulationResult(xr.Dataset):
                                 ('CT', ct_ilk, 'Thrust coefficient'),
                             ]},
                             coords=coords)
-        self['P'] = localWind.P
-        self['WD'] = localWind.WD
-        self['WS'] = localWind.WS
-        self['TI'] = localWind.TI
+        for n in localWind:
+            self[n] = localWind[n]
+        self.attrs.update(localWind.attrs)
+
         if yaw_ilk is None:
             self['Yaw'] = self.Power * 0
         else:
@@ -186,7 +195,8 @@ class SimulationResult(xr.Dataset):
          """
         return self.aep(normalize_probabilities=normalize_probabilities, with_wake_loss=with_wake_loss).ilk()
 
-    def aep(self, normalize_probabilities=False, with_wake_loss=True):
+    def aep(self, normalize_probabilities=False, with_wake_loss=True,
+            hours_pr_year=24 * 365, linear_power_segments=False):
         """Anual Energy Production (sum of all wind turbines, directions and speeds) in GWh.
 
         See aep_ilk
@@ -199,9 +209,30 @@ class SimulationResult(xr.Dataset):
             power_ilk = self.Power.ilk()
 
         else:
-            power_ilk = self.windFarmModel.windTurbines.power(self.WS.ilk(self.Power.shape), self.type)
+            power_ilk = self.windFarmModel.windTurbines.power(self.WS.ilk(self.Power.shape), self.type.values)
 
-        return xr.DataArray(power_ilk * self.P.ilk() / norm * 24 * 365 * 1e-9,
+        if linear_power_segments:
+            s = "The linear_power_segments method "
+            assert all([n in self for n in ['Weibull_A', 'Weibull_k', 'Sector_frequency']]),\
+                s + "requires a site with weibull information"
+            assert normalize_probabilities is False, \
+                s + "cannot be combined with normalize_probabilities"
+            assert np.all(self.Power.isel(ws=0) == 0) and np.all(self.Power.isel(ws=-1) == 0),\
+                s + "requires first wind speed to have no power (just below cut-in)"
+            assert np.all(self.Power.isel(ws=-1) == 0),\
+                s + "requires last wind speed to have no power (just above cut-out)"
+            weighted_power = weibull.WeightedPower(
+                self.ws.values,
+                self.Power.ilk(),
+                self.Weibull_A.ilk(),
+                self.Weibull_k.ilk())
+            aep = weighted_power * self.Sector_frequency.ilk() * hours_pr_year * 1e-9
+            ws = (self.ws.values[1:] + self.ws.values[:-1]) / 2
+            return xr.DataArray(aep, [('wt', self.wt), ('wd', self.wd), ('ws', ws)])
+        else:
+            weighted_power = power_ilk * self.P.ilk() / norm
+
+        return xr.DataArray(weighted_power * hours_pr_year * 1e-9,
                             self.Power.coords,
                             name='AEP [GWh]',
                             attrs={'Description': 'Annual energy production [GWh]'})
@@ -238,8 +269,10 @@ class SimulationResult(xr.Dataset):
         if isinstance(grid, Grid):
             if isinstance(grid, HorizontalGrid):
                 plane = "XY", self.h
-            elif isinstance(grid, YZGrid):
+            if isinstance(grid, YZGrid):
                 plane = 'YZ', grid.x
+            if isinstance(grid, Points):
+                plane = 'xyz', None
             grid = grid(x_i=self.x, y_i=self.y, h_i=self.h,
                         d_i=self.windFarmModel.windTurbines.diameter(self.type))
         else:

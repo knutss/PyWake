@@ -2,6 +2,7 @@ import numpy as np
 import xml.etree.ElementTree as ET
 from scipy.interpolate.fitpack2 import UnivariateSpline
 from autograd.core import defvjp, primitive
+from matplotlib.patches import Ellipse
 
 
 class WindTurbines():
@@ -122,12 +123,13 @@ class WindTurbines():
         t = np.unique(type_i)  # .astype(int)
         if len(t) > 1:
             if type_i.shape != ws_i.shape:
-                type_i = (np.zeros(ws_i.shape[0]) + type_i).astype(int)
+                type_i = (np.zeros(ws_i.shape[0]) + type_i)
+            type_i = type_i.astype(int)
             CT = np.array([self.ct_funcs[t](ws) for t, ws in zip(type_i, ws_i)])
             P = np.array([self.power_funcs[t](ws) for t, ws in zip(type_i, ws_i)])
             return CT, P
         else:
-            return self.ct_funcs[t[0]](ws_i), self.power_funcs[t[0]](ws_i)
+            return self.ct_funcs[int(t[0])](ws_i), self.power_funcs[int(t[0])](ws_i)
 
     def set_gradient_funcs(self, power_grad_funcs, ct_grad_funcs):
         def add_grad(f_lst, df_lst):
@@ -194,7 +196,7 @@ class WindTurbines():
         self.power_funcs = add_grad(self.power_splines)
         self.ct_funcs = add_grad(self.ct_splines)
 
-    def plot_xy(self, x, y, types=None, wd=None, yaw=0, ax=None):
+    def plot_xy(self, x, y, types=None, wd=None, yaw=0, normalize_with=1, ax=None):
         """Plot wind farm layout including type name and diameter
 
         Parameters
@@ -224,11 +226,14 @@ class WindTurbines():
         assert len(x) == len(y)
         types = (np.zeros_like(x) + types).astype(int)  # ensure same length as x
         yaw = np.zeros_like(x) + yaw
-        for i, (x_, y_, d, t, yaw_) in enumerate(zip(x, y, self.diameter(types), types, yaw)):
+
+        x, y, D = [np.asarray(v) / normalize_with for v in [x, y, self.diameter(types)]]
+
+        for i, (x_, y_, d, t, yaw_) in enumerate(zip(x, y, D, types, yaw)):
             if wd is None or len(np.atleast_1d(wd)) > 1:
                 circle = Circle((x_, y_), d / 2, ec=colors[t], fc="None")
                 ax.add_artist(circle)
-                plt.plot(x_, y_, 'None', )
+                ax.plot(x_, y_, 'None', )
             else:
                 for wd_ in np.atleast_1d(wd):
                     c, s = np.cos(np.deg2rad(90 + wd_ - yaw_)), np.sin(np.deg2rad(90 + wd_ - yaw_))
@@ -243,7 +248,7 @@ class WindTurbines():
         ax.legend(loc=1)
         ax.axis('equal')
 
-    def plot_yz(self, y, z=None, types=None, wd=None, yaw=0, ax=None):
+    def plot_yz(self, y, z=None, h=None, types=None, wd=270, yaw=0, normalize_with=1, ax=None):
         """Plot wind farm layout in yz-plane including type name and diameter
 
         Parameters
@@ -263,7 +268,13 @@ class WindTurbines():
         if z is None:
             z = np.zeros_like(y)
         if types is None:
-            types = np.zeros_like(y)
+            types = np.zeros_like(y).astype(int)
+        else:
+            types = (np.zeros_like(y) + types).astype(int)  # ensure same length as x
+        if h is None:
+            h = np.zeros_like(y) + self.hub_height(types)
+        else:
+            h = np.zeros_like(y) + h
 
         if ax is None:
             ax = plt.gca()
@@ -271,26 +282,26 @@ class WindTurbines():
         colors = ['gray', 'k', 'r', 'g', 'k'] * 5
 
         from matplotlib.patches import Circle
-        types = (np.zeros_like(y) + types).astype(int)  # ensure same length as x
 
         yaw = np.zeros_like(y) + yaw
+        y, z, h, D = [v / normalize_with for v in [y, z, h, self.diameter(types)]]
         for i, (y_, z_, h_, d, t, yaw_) in enumerate(
-                zip(y, z, self.hub_height(types), self.diameter(types), types, yaw)):
-            circle = Circle((y_, h_ + z_), d / 2, ec=colors[t], fc="None")
+                zip(y, z, h, D, types, yaw)):
+            circle = Ellipse((y_, h_ + z_), d * np.sin(np.deg2rad(wd - yaw_)), d, ec=colors[t], fc="None")
             ax.add_artist(circle)
-            plt.plot([y_, y_], [z_, z_ + h_], 'k')
-            plt.plot(y_, h_, 'None')
+            ax.plot([y_, y_], [z_, z_ + h_], 'k')
+            ax.plot(y_, h_, 'None')
 
         for t, m, c in zip(np.unique(types), markers, colors):
             ax.plot([], [], '2', color=c, label=self._names[int(t)])
 
-        for i, (y_, z_, h_, d) in enumerate(zip(y, z, self.hub_height(types), self.diameter(types))):
+        for i, (y_, z_, h_, d) in enumerate(zip(y, z, h, D)):
             ax.annotate(i, (y_ + d / 2, z_ + h_ + d / 2), fontsize=7)
         ax.legend(loc=1)
         ax.axis('equal')
 
-    def plot(self, x, y, types=None, wd=None, yaw=0, ax=None):
-        return self.plot_xy(x, y, types, wd, yaw, ax)
+    def plot(self, x, y, types=None, wd=None, yaw=0, normalize_with=1, ax=None):
+        return self.plot_xy(x, y, types, wd, yaw, normalize_with, ax)
 
     @staticmethod
     def from_WindTurbines(wt_lst):
@@ -311,7 +322,7 @@ class WindTurbines():
                             power_unit='w')
 
     @staticmethod
-    def from_WAsP_wtg(wtg_file, power_unit='W'):
+    def from_WAsP_wtg(wtg_file, mode=0, power_unit='W'):
         """ Parse the one/multiple .wtg file(s) (xml) to initilize an
         WindTurbines object.
 
@@ -324,8 +335,7 @@ class WindTurbines():
         -------
         an object of WindTurbines.
 
-        Note: it is assumed that the power_unit inside multiple .wtg files
-        is the same, i.e., power_unit.
+        Note: it is assumed that the power_unit inside multiple .wtg files is the same, i.e., power_unit.
         """
         if not isinstance(wtg_file, list):
             wtg_file_list = [wtg_file]
@@ -337,19 +347,28 @@ class WindTurbines():
         hub_heights = []
         ct_funcs = []
         power_funcs = []
-
-        for wtg_file in wtg_file_list:
+        densities = []
+        mode = np.zeros(len(wtg_file_list), dtype=int) + mode
+        char_data_tables = []
+        cut_ins = []
+        cut_outs = []
+        for wtg_file, m in zip(wtg_file_list, mode):
             tree = ET.parse(wtg_file)
             root = tree.getroot()
             # Reading data from wtg_file
             name = root.attrib['Description']
             diameter = np.float(root.attrib['RotorDiameter'])
             hub_height = np.float(root.find('SuggestedHeights').find('Height').text)
-            ws_cutin = np.float(root.find('PerformanceTable').find('StartStopStrategy').attrib['LowSpeedCutIn'])
-            ws_cutout = np.float(root.find('PerformanceTable').find('StartStopStrategy').attrib['HighSpeedCutOut'])
+
+            perftab = list(root.iter('PerformanceTable'))[m]
+            density = np.float(perftab.attrib['AirDensity'])
+            ws_cutin = np.float(perftab.find('StartStopStrategy').attrib['LowSpeedCutIn'])
+            ws_cutout = np.float(perftab.find('StartStopStrategy').attrib['HighSpeedCutOut'])
+            cut_ins.append(ws_cutin)
+            cut_outs.append(ws_cutout)
 
             i_point = 0
-            for DataPoint in root.iter('DataPoint'):
+            for DataPoint in perftab.iter('DataPoint'):
                 i_point = i_point + 1
                 ws = np.float(DataPoint.attrib['WindSpeed'])
                 Ct = np.float(DataPoint.attrib['ThrustCoEfficient'])
@@ -358,21 +377,28 @@ class WindTurbines():
                     dt = np.array([[ws, Ct, power]])
                 else:
                     dt = np.append(dt, np.array([[ws, Ct, power]]), axis=0)
+            ct_idle = dt[-1, 1]
+            eps = 1e-8
 
-            rated_power = np.max(dt[:, 2])
-            ws = dt[:, 0]
-            ct = dt[:, 1]
-            power = dt[:, 2]
+            ws = np.r_[0, ws_cutin - eps, dt[:, 0], ws_cutout + eps, 100]
+            ct = np.r_[ct_idle, ct_idle, dt[:, 1], ct_idle, ct_idle]
+            power = np.r_[0, 0, dt[:, 2], 0, 0]
 
             names.append(name)
             diameters.append(diameter)
             hub_heights.append(hub_height)
-            ct_funcs.append(Interp(ws, ct, left=0, right=0))
-            power_funcs.append(Interp(ws, power, left=0, right=0))
 
-        return WindTurbines(names=names, diameters=diameters,
-                            hub_heights=hub_heights, ct_funcs=ct_funcs,
-                            power_funcs=power_funcs, power_unit=power_unit)
+            ct_funcs.append(Interp(ws, ct))
+            power_funcs.append(Interp(ws, power))
+            char_data_tables.append(np.array([ws, ct, power]).T)
+
+        wts = WindTurbines(names=names, diameters=diameters,
+                           hub_heights=hub_heights, ct_funcs=ct_funcs,
+                           power_funcs=power_funcs, power_unit=power_unit)
+        wts.upct_tables = char_data_tables
+        wts.cut_in = cut_ins
+        wts.cut_out = cut_outs
+        return wts
 
 
 class OneTypeWindTurbines(WindTurbines):
