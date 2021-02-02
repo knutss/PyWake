@@ -6,6 +6,7 @@ from .vortexcylinder import VortexCylinder
 from .vortexdipole import VortexDipole
 from .rathmann import Rathmann
 from .noj import NOJDeficit, NOJLocalDeficit
+from .tp import TPDeficit
 from .gaussian import BastankhahGaussianDeficit, IEA37SimpleBastankhahGaussianDeficit, \
     NiayifarGaussianDeficit, ZongGaussianDeficit
 from .fuga import FugaDeficit, FugaYawDeficit

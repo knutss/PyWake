@@ -40,6 +40,7 @@ class NOJDeficit(NiayifarGaussianDeficit, AreaOverlappingFactor):
     def _wake_radius(self, D_src_il, dw_ijlk, **kwargs):
         k_ijlk = np.atleast_3d(self.k_ilk(kwargs.get('TI_eff_ilk', 0)))[:, na]
         wake_radius_ijlk = (k_ijlk * dw_ijlk + D_src_il[:, na, :, na] / 2)
+        #print(wake_radius_ijlk.min(), wake_radius_ijlk.mean(), wake_radius_ijlk.max())
         return wake_radius_ijlk, k_ijlk
 
     def wake_radius(self, D_src_il, dw_ijlk, **kwargs):
