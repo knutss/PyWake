@@ -27,7 +27,7 @@ class TPDeficit(NOJDeficit, AreaOverlappingFactor):
     def _calc_layout_terms(self, WS_ilk, WS_eff_ilk, D_src_il, D_dst_ijl, dw_ijlk, cw_ijlk, ct_ilk, **kwargs):
         WS_ref_ilk = (WS_ilk, WS_eff_ilk)[self.use_effective_ws]
         R_src_il = D_src_il / 2
-        wake_radius = self._wake_radius(D_src_il, dw_ijlk, ct_ilk, **kwargs)
+        wake_radius = self._wake_radius(WS_ilk, D_src_il, dw_ijlk, ct_ilk, **kwargs)
         term_denominator_ijlk = (wake_radius / R_src_il[:, na, :, na])**2
         term_denominator_ijlk += (term_denominator_ijlk == 0)
         A_ol_factor_ijlk = self.overlapping_area_factor(wake_radius, dw_ijlk, cw_ijlk, D_src_il, D_dst_ijl)
@@ -43,10 +43,18 @@ class TPDeficit(NOJDeficit, AreaOverlappingFactor):
         term_numerator_ilk = (1 - np.sqrt(1 - ct_ilk))
         return term_numerator_ilk[:, na] * self.layout_factor_ijlk
 
-    def _wake_radius(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
+    def _calcTI(self,ws,z=140,wti_fac=1.):
+        (a1,a2,a3)=(0.035,0.0089,0.0402)
+        zref=10.
+        Uref=10.
+        TI=(a1*(ws/Uref)+a2+a3*(1/(ws/Uref)))*(z/zref)**(-0.22)
+        return TI*wti_fac
+
+    def _wake_radius(self, WS_ilk, D_src_il, dw_ijlk, ct_ilk, **kwargs):
         k_ijlk = np.atleast_3d(self.k)[:, na]
         D=D_src_il[:, na, :, na]
         TI=kwargs.get('TI_ilk', 0)[:, na]
+        #TI=self._calcTI(WS_ilk)[:, na]
         ct = np.minimum(ct_ilk, 1)   # treat ct_ilk for np.sqrt()
         alp=1.5*TI
         bet=((0.8*TI)/np.sqrt(ct)[:, na])
@@ -58,8 +66,8 @@ class TPDeficit(NOJDeficit, AreaOverlappingFactor):
         #print(wake_radius_ijlk.min(), wake_radius_ijlk.mean(), wake_radius_ijlk.max())
         return wake_radius_ijlk
 
-    def wake_radius(self, D_src_il, dw_ijlk, ct_ilk, **kwargs):
-        return self._wake_radius(D_src_il, dw_ijlk, ct_ilk, **kwargs)[0]
+    def wake_radius(self, WS_ilk, D_src_il, dw_ijlk, ct_ilk, **kwargs):
+        return self._wake_radius(WS_ilk, D_src_il, dw_ijlk, ct_ilk, **kwargs)[0]
 
 
 
