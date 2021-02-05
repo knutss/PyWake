@@ -1,4 +1,4 @@
-from py_wake.flow_map import HorizontalGrid, YZGrid, Grid, Points
+from py_wake.flow_map import HorizontalGrid, YZGrid, Grid, Points, XYGrid
 from py_wake.tests import npt
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,6 +7,16 @@ from py_wake.site.distance import StraightDistance
 from py_wake.examples.data.iea37 import IEA37Site, IEA37_WindTurbines
 from py_wake import IEA37SimpleBastankhahGaussian
 import pytest
+from py_wake.deflection_models.jimenez import JimenezWakeDeflection
+
+
+@pytest.fixture(autouse=True)
+def close_plots():
+    yield
+    try:
+        plt.close()
+    except Exception:
+        pass
 
 
 def test_power_xylk():
@@ -121,14 +131,15 @@ def test_YZGrid_terrain_perpendicular():
     wind_farm_model = IEA37SimpleBastankhahGaussian(site, windTurbines)
     simulation_result = wind_farm_model(x, y, wd=270, ws=10)
     x = x.max() + 10
-    fm = simulation_result.flow_map(grid=YZGrid(x, z=110, resolution=20))
+    fm = simulation_result.flow_map(grid=YZGrid(x, z=110, resolution=20, extend=0))
     y = fm.X[0]
     x = np.zeros_like(y) + x
     z = site.elevation(x, y)
-    simulation_result.flow_map().plot_wake_map()
+    simulation_result.flow_map(XYGrid(extend=.005)).plot_wake_map()
     plt.plot(x, y, '.')
     plt.figure()
-    simulation_result.flow_map(grid=YZGrid(x.max() + 10)).plot_wake_map()
+    simulation_result.flow_map(grid=YZGrid(fm.x.item(), y=fm.y,
+                                           z=np.arange(30, 210, 10))).plot_wake_map()
     plt.plot(y, z + 110, '.')
     plt.plot(y, fm.WS_eff_xylk[:, 0, 0, 0] * 100, label="ws*100")
     plt.legend()
@@ -137,8 +148,8 @@ def test_YZGrid_terrain_perpendicular():
         plt.show()
     plt.close()
     npt.assert_array_almost_equal(fm.WS_eff_xylk[:, 0, 0, 0],
-                                  [10.0, 10.0, 11.69, 5.8, 8.7, 5.15, 10.63, 4.99, 10.73, 8.16, 13.24, 5.59,
-                                   12.4, 7.02, 10.91, 7.21, 8.77, 8.41, 9.99, 10.0], 2)
+                                  [5.39, 8.48, 8.42, 6.42, 5.55, 11.02, 4.99, 11.47, 5.32, 10.22, 13.39, 8.79,
+                                   8.51, 12.4, 5.47, 10.78, 10.12, 6.54, 10.91, 7.18], 2)
 
 
 def test_YZGrid_terrain_parallel():
@@ -149,14 +160,14 @@ def test_YZGrid_terrain_parallel():
     wind_farm_model = IEA37SimpleBastankhahGaussian(site, windTurbines)
     simulation_result = wind_farm_model(x, y, wd=0, ws=10)
     x = 264000
-    fm = simulation_result.flow_map(grid=YZGrid(x, z=110, resolution=20))
+    fm = simulation_result.flow_map(grid=YZGrid(x, z=110, resolution=20, extend=0))
     y = fm.X[0]
     x = np.zeros_like(y) + x
     z = site.elevation(x, y)
-    simulation_result.flow_map().plot_wake_map()
+    simulation_result.flow_map(XYGrid(extend=0.005)).plot_wake_map()
     plt.plot(x, y, '.')
     plt.figure()
-    simulation_result.flow_map(grid=YZGrid(x.max() + 10)).plot_wake_map()
+    simulation_result.flow_map(grid=YZGrid(fm.x.item(), fm.y, z=np.arange(30, 210, 10))).plot_wake_map()
     plt.plot(y, z + 110, '.')
     plt.plot(y, fm.WS_eff_xylk[:, 0, 0, 0] * 100, label="ws*100")
     plt.legend()
@@ -165,8 +176,8 @@ def test_YZGrid_terrain_parallel():
         plt.show()
     plt.close()
     npt.assert_array_almost_equal(fm.WS_eff_xylk[:, 0, 0, 0],
-                                  [6.68, 6.27, 5.26, 5.65, 4.98, 4.36, 4.39, 7.41, 7.07, 7.17, 7.26, 7.32, 5.58,
-                                   11.21, 11.87, 11.96, 10.34, 9.95, 10.0, 10.0], 2)
+                                  [7.24, 7.24, 7.28, 7.42, 4.48, 6.14, 3.52, 4.98, 6.06, 7.18, 8.24, 8.64, 7.14,
+                                   7.28, 3.8, 5.72, 7.09, 7.49, 6.88, 6.15], 2)
 
 
 def test_Points():
@@ -204,4 +215,29 @@ def test_FlowBox():
 
     wf_model = IEA37SimpleBastankhahGaussian(site, windTurbines)
     sim_res = wf_model(x, y)
-    flow_box = sim_res.flow_box(x=np.arange(0, 100, 10), y=np.arange(0, 100, 10), h=np.arange(0, 100, 10))
+    sim_res.flow_box(x=np.arange(0, 100, 10), y=np.arange(0, 100, 10), h=np.arange(0, 100, 10))
+
+
+def test_min_ws_eff_line():
+
+    site = IEA37Site(16)
+    x, y = [0, 600, 1200], [0, 0, 0]  # site.initial_position[:2].T
+    windTurbines = IEA37_WindTurbines()
+    wfm = IEA37SimpleBastankhahGaussian(site, windTurbines, deflectionModel=JimenezWakeDeflection())
+
+    yaw_ilk = np.reshape([-30, 30, 0], (3, 1, 1))
+
+    plt.figure(figsize=(14, 3))
+    fm = wfm(x, y, yaw_ilk=yaw_ilk, wd=270, ws=10).flow_map(
+        XYGrid(x=np.arange(-100, 2000, 10), y=np.arange(-500, 500, 10)))
+    min_ws_line = fm.min_WS_eff()
+
+    if 0:
+        fm.plot_wake_map()
+        min_ws_line.plot()
+        print(np.round(min_ws_line[::10], 2))
+        plt.show()
+    npt.assert_array_almost_equal(min_ws_line[::10],
+                                  [np.nan, np.nan, 11.6, 21.64, 30.42, 38.17, 45.09, 51.27,
+                                   -8.65, -18.66, -27.51, -35.37, -42.38, -48.58, -1.09, -1.34,
+                                   -1.59, -1.83, -2.07, -2.31, -2.56], 2)

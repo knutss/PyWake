@@ -1,11 +1,10 @@
 from abc import ABC, abstractmethod
+import numpy as np
+from numpy import newaxis as na
 
 
 class DeficitModel(ABC):
     deficit_initalized = False
-
-    def __init__(self):
-        self.args4deficit = ['WS_ilk', 'dw_ijlk']
 
     def _calc_layout_terms(self, **_):
         pass
@@ -27,6 +26,14 @@ class DeficitModel(ABC):
         deficit_jlk : array_like
         """
 
+    def calc_deficit_downwind(self, yaw_ilk, **kwargs):
+        if np.any(yaw_ilk != 0):
+            deficit_normal = self.calc_deficit(yaw_ilk=yaw_ilk, **kwargs)
+            return deficit_normal
+            return np.cos(yaw_ilk[:, na]) * deficit_normal
+        else:
+            return self.calc_deficit(yaw_ilk=yaw_ilk, **kwargs)
+
     def wake_radius(self, dw_ijlk, **_):
         """Calculates the radius of the wake of the i'th turbine
         for all wind directions(l) and wind speeds(k) at a set of points(j)
@@ -43,7 +50,23 @@ class DeficitModel(ABC):
         raise NotImplementedError("wake_radius not implemented for %s" % self.__class__.__name__)
 
 
-class ConvectionDeficitModel(DeficitModel):
+class BlockageDeficitModel(DeficitModel):
+    def __init__(self, upstream_only=False):
+        self.upstream_only = upstream_only
+
+    def calc_blockage_deficit(self, dw_ijlk, **kwargs):
+        deficit_ijlk = self.calc_deficit(dw_ijlk=dw_ijlk, **kwargs)
+        if self.upstream_only:
+            rotor_pos = -1e-10
+            deficit_ijlk *= (dw_ijlk < rotor_pos)
+        return deficit_ijlk
+
+
+class WakeDeficitModel(DeficitModel):
+    pass
+
+
+class ConvectionDeficitModel(WakeDeficitModel):
 
     @abstractmethod
     def calc_deficit_convection(self):
