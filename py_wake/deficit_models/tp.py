@@ -53,8 +53,12 @@ class TPDeficit(NOJDeficit, AreaOverlappingFactor):
     def _wake_radius(self, WS_ilk, D_src_il, dw_ijlk, ct_ilk, **kwargs):
         k_ijlk = np.atleast_3d(self.k)[:, na]
         D=D_src_il[:, na, :, na]
-        TI=kwargs.get('TI_ilk', 0)[:, na]
-        #TI=self._calcTI(WS_ilk)[:, na]
+        #TI=kwargs.get('TI_ilk', 0)[:, na]
+        TI=kwargs.get('TI_ilk', 0)
+        if TI.all()==0:
+            TI=self._calcTI(WS_ilk)[:, na]
+        else:
+            TI=TI[:, na]
         ct = np.minimum(ct_ilk, 1)   # treat ct_ilk for np.sqrt()
         alp=1.5*TI
         bet=((0.8*TI)/np.sqrt(ct)[:, na])
