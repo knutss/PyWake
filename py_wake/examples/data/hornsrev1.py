@@ -1,6 +1,7 @@
 import numpy as np
 from py_wake.site._site import UniformWeibullSite
-from py_wake.wind_turbines import OneTypeWindTurbines
+from py_wake.wind_turbines import WindTurbine
+from py_wake.wind_turbines.power_ct_functions import PowerCtTabular
 
 wt_x = [423974, 424042, 424111, 424179, 424247, 424315, 424384, 424452, 424534,
         424602, 424671, 424739, 424807, 424875, 424944, 425012, 425094, 425162,
@@ -76,30 +77,31 @@ ct_curve = np.array([[3.0, 0.0],
                      [25.0, 0.053]])
 
 
-class V80(OneTypeWindTurbines):
-    def __init__(self):
-        OneTypeWindTurbines.__init__(self, 'V80', diameter=80, hub_height=70,
-                                     ct_func=self._ct, power_func=self._power, power_unit='W')
-
-    def _ct(self, u):
-        return np.interp(u, ct_curve[:, 0], ct_curve[:, 1])
-
-    def _power(self, u):
-        return np.interp(u, power_curve[:, 0], power_curve[:, 1])
+class V80(WindTurbine):
+    def __init__(self, method='linear'):
+        """
+        Parameters
+        ----------
+        method : {'linear', 'pchip'}
+            linear(fast) or pchip(smooth and gradient friendly) interpolation
+        """
+        WindTurbine.__init__(self, name='V80', diameter=80, hub_height=70,
+                             powerCtFunction=PowerCtTabular(power_curve[:, 0], power_curve[:, 1], 'w',
+                                                            ct_curve[:, 1], method=method))
 
 
 HornsrevV80 = V80
 
 
 class Hornsrev1Site(UniformWeibullSite):
-    def __init__(self):
+    def __init__(self, shear=None):
         f = [3.597152, 3.948682, 5.167395, 7.000154, 8.364547, 6.43485,
              8.643194, 11.77051, 15.15757, 14.73792, 10.01205, 5.165975]
         a = [9.176929, 9.782334, 9.531809, 9.909545, 10.04269, 9.593921,
              9.584007, 10.51499, 11.39895, 11.68746, 11.63732, 10.08803]
         k = [2.392578, 2.447266, 2.412109, 2.591797, 2.755859, 2.595703,
              2.583984, 2.548828, 2.470703, 2.607422, 2.626953, 2.326172]
-        UniformWeibullSite.__init__(self, np.array(f) / np.sum(f), a, k, .1)
+        UniformWeibullSite.__init__(self, np.array(f) / np.sum(f), a, k, .1, shear=shear)
         self.initial_position = np.array([wt_x, wt_y]).T
 
 
@@ -107,9 +109,17 @@ def main():
     wt = V80()
     print('Diameter', wt.diameter())
     print('Hub height', wt.hub_height())
-    ws = np.arange(3, 25)
+
     import matplotlib.pyplot as plt
-    plt.plot(ws, wt.power(ws), '.-')
+    ws = np.linspace(3, 20, 100)
+    plt.plot(ws, wt.power(ws) * 1e-3, label='Power')
+    c = plt.plot([], [], label='Ct')[0].get_color()
+    plt.ylabel('Power [kW]')
+    ax = plt.gca().twinx()
+    ax.plot(ws, wt.ct(ws), color=c)
+    ax.set_ylabel('Ct')
+    plt.xlabel('Wind speed [m/s]')
+    plt.gcf().axes[0].legend(loc=1)
     plt.show()
 
 
